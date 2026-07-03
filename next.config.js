@@ -1,7 +1,10 @@
 /** @type {import('next').NextConfig} */
 /* eslint-disable @typescript-eslint/no-var-requires */
+const isCloudflarePages =
+  process.env.CF_PAGES === '1' || process.env.CF_PAGES === 'true';
+
 const nextConfig = {
-  output: 'standalone',
+  ...(isCloudflarePages ? {} : { output: 'standalone' }),
   eslint: {
     dirs: ['src'],
   },

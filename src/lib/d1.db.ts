@@ -1,5 +1,7 @@
 /* eslint-disable no-console, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
+import { getOptionalRequestContext } from '@cloudflare/next-on-pages';
+
 import { AdminConfig } from './admin.types';
 import { EpisodeSkipConfig, Favorite, IStorage, PlayRecord, User, UserSettings } from './types';
 
@@ -37,23 +39,28 @@ interface D1ExecResult {
   duration: number;
 }
 
-// 获取全局D1数据库实例
+// Get the D1 binding from Cloudflare's request context first. On Pages,
+// bindings are exposed on env, not reliably on globalThis or process.env.
 function getD1Database(): D1Database {
-  // 在 Cloudflare Pages 环境中，DB 通过全局绑定可用
+  const context = getOptionalRequestContext();
+  const requestContextDB = (context?.env as any)?.DB;
+  if (requestContextDB) {
+    return requestContextDB as D1Database;
+  }
+
   if (typeof globalThis !== 'undefined') {
-    // 尝试直接访问全局 DB
     const globalDB = (globalThis as any).DB;
     if (globalDB) {
       return globalDB as D1Database;
     }
   }
-  
-  // 回退到 process.env（用于本地开发）
-  if (process.env.DB) {
-    return (process.env as any).DB as D1Database;
+
+  const processDB = (process.env as any).DB;
+  if (processDB && typeof processDB !== 'string') {
+    return processDB as D1Database;
   }
-  
-  throw new Error('D1 database not available');
+
+  throw new Error('D1 database binding DB is not available');
 }
 
 export class D1Storage implements IStorage {
@@ -220,8 +227,8 @@ export class D1Storage implements IStorage {
         .prepare(
           `
           INSERT OR REPLACE INTO favorites 
-          (username, key, title, source_name, cover, year, total_episodes, save_time)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (username, key, title, source_name, cover, year, total_episodes, save_time, search_title)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         )
         .bind(
@@ -232,7 +239,8 @@ export class D1Storage implements IStorage {
           favorite.cover,
           favorite.year,
           favorite.total_episodes,
-          favorite.save_time
+          favorite.save_time,
+          favorite.search_title || null
         )
         .run();
     } catch (err) {
@@ -354,6 +362,8 @@ export class D1Storage implements IStorage {
         db
           .prepare('DELETE FROM search_history WHERE username = ?')
           .bind(userName),
+        db.prepare('DELETE FROM skip_configs WHERE username = ?').bind(userName),
+        db.prepare('DELETE FROM user_settings WHERE username = ?').bind(userName),
       ];
 
       await db.batch(statements);

@@ -31,15 +31,7 @@ function createStorage(): IStorage {
       case 'upstash':
         return new UpstashRedisStorage();
       case 'd1':
-        // 对于 d1，先检查是否可用
-        if (typeof globalThis !== 'undefined' && (globalThis as any).DB) {
-          return new D1Storage();
-        } else if (process.env.DB) {
-          return new D1Storage();
-        } else {
-          // D1 不可用，回退到 LocalStorage
-          return new LocalStorage();
-        }
+        return new D1Storage();
       case 'localstorage':
       default:
         // 使用 LocalStorage 实现，适用于本地开发和简单部署
@@ -183,7 +175,12 @@ export class DbManager {
   // 获取全部用户名
   async getAllUsers(): Promise<string[]> {
     if (typeof (this.storage as any).getAllUsers === 'function') {
-      return (this.storage as any).getAllUsers();
+      const users = await (this.storage as any).getAllUsers();
+      return users
+        .map((user: any) =>
+          typeof user === 'string' ? user : user?.username
+        )
+        .filter(Boolean);
     }
     return [];
   }

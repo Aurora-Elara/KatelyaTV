@@ -18,6 +18,21 @@ interface ConfigFileStruct {
   };
 }
 
+type StoredUserEntry = string | { username?: unknown };
+
+function normalizeUserNames(users: unknown): string[] {
+  if (!Array.isArray(users)) {
+    return [];
+  }
+
+  return users
+    .map((user: StoredUserEntry) =>
+      typeof user === 'string' ? user : user?.username
+    )
+    .filter((username): username is string => typeof username === 'string')
+    .filter((username) => username.length > 0);
+}
+
 export const API_CONFIG = {
   search: {
     path: '?ac=videolist&wd=',
@@ -77,7 +92,7 @@ async function initConfig() {
       let userNames: string[] = [];
       if (storage && typeof (storage as any).getAllUsers === 'function') {
         try {
-          userNames = await (storage as any).getAllUsers();
+          userNames = normalizeUserNames(await (storage as any).getAllUsers());
         } catch (e) {
           console.error('获取用户列表失败:', e);
         }
@@ -324,7 +339,7 @@ export async function resetConfig() {
   let userNames: string[] = [];
   if (storage && typeof (storage as any).getAllUsers === 'function') {
     try {
-      userNames = await (storage as any).getAllUsers();
+      userNames = normalizeUserNames(await (storage as any).getAllUsers());
     } catch (e) {
       console.error('获取用户列表失败:', e);
     }
