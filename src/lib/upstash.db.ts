@@ -414,7 +414,8 @@ export class UpstashRedisStorage implements IStorage {
 function getUpstashRedisClient(): Redis {
   const legacyKey = Symbol.for('__MOONTV_UPSTASH_REDIS_CLIENT__');
   const globalKey = Symbol.for('__KATELYATV_UPSTASH_REDIS_CLIENT__');
-  let client: Redis | undefined = (global as any)[globalKey] || (global as any)[legacyKey];
+  let client: Redis | undefined =
+    (globalThis as any)[globalKey] || (globalThis as any)[legacyKey];
 
   if (!client) {
     const upstashUrl =
@@ -442,9 +443,9 @@ function getUpstashRedisClient(): Redis {
 
     console.log('Upstash Redis client created successfully');
 
-    (global as any)[globalKey] = client;
+    (globalThis as any)[globalKey] = client;
     // 同步设置旧的全局键，保持向后兼容
-    (global as any)[legacyKey] = client;
+    (globalThis as any)[legacyKey] = client;
   }
 
   return client;
