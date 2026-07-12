@@ -1,3 +1,5 @@
+/* eslint-disable no-console */
+
 import { API_CONFIG, ApiSite, getConfig } from '@/lib/config';
 import { SearchResult } from '@/lib/types';
 import { cleanHtmlTags } from '@/lib/utils';
@@ -37,6 +39,9 @@ export async function searchFromApi(
     clearTimeout(timeoutId);
 
     if (!response.ok) {
+      console.warn(
+        `[downstream:${apiSite.key}] search returned HTTP ${response.status}`
+      );
       return [];
     }
 
@@ -124,7 +129,12 @@ export async function searchFromApi(
 
             clearTimeout(pageTimeoutId);
 
-            if (!pageResponse.ok) return [];
+            if (!pageResponse.ok) {
+              console.warn(
+                `[downstream:${apiSite.key}] search page ${page} returned HTTP ${pageResponse.status}`
+              );
+              return [];
+            }
 
             const pageData = await pageResponse.json();
 
@@ -163,6 +173,10 @@ export async function searchFromApi(
               };
             });
           } catch (error) {
+            console.warn(
+              `[downstream:${apiSite.key}] search page ${page} failed:`,
+              error instanceof Error ? error.message : 'Unknown error'
+            );
             return [];
           }
         })();
@@ -183,6 +197,10 @@ export async function searchFromApi(
 
     return results;
   } catch (error) {
+    console.warn(
+      `[downstream:${apiSite.key}] search failed:`,
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     return [];
   }
 }

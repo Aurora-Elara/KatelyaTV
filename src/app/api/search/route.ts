@@ -1,11 +1,29 @@
+/* eslint-disable no-console */
+
 import { NextResponse } from 'next/server';
 
-import { getAvailableApiSites,getCacheTime } from '@/lib/config';
+import { getAvailableApiSites, getCacheTime } from '@/lib/config';
 import { addCorsHeaders, handleOptionsRequest } from '@/lib/cors';
 import { getStorage } from '@/lib/db';
 import { searchFromApi } from '@/lib/downstream';
 
 export const runtime = 'edge';
+
+function getSearchCacheHeaders(cacheTime: number, hasResults: boolean) {
+  if (!hasResults) {
+    return {
+      'Cache-Control': 'no-store',
+      'CDN-Cache-Control': 'no-store',
+      'Vercel-CDN-Cache-Control': 'no-store',
+    };
+  }
+
+  return {
+    'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
+    'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+    'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+  };
+}
 
 // 处理OPTIONS预检请求（OrionTV客户端需要）
 export async function OPTIONS() {
@@ -33,11 +51,7 @@ export async function GET(request: Request) {
         adult_results: []
       },
       {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        },
+        headers: getSearchCacheHeaders(cacheTime, false),
       }
     );
     return addCorsHeaders(response);
@@ -75,11 +89,7 @@ export async function GET(request: Request) {
         regular_results: [], 
         adult_results: [] 
       }, {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        },
+        headers: getSearchCacheHeaders(cacheTime, false),
       });
       return addCorsHeaders(response);
     }
@@ -96,22 +106,25 @@ export async function GET(request: Request) {
         adult_results: [] // 始终为空，因为成人内容在源头就被过滤了
       },
       {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        },
+        headers: getSearchCacheHeaders(cacheTime, searchResults.length > 0),
       }
     );
     return addCorsHeaders(response);
   } catch (error) {
+    console.error(
+      'Search route failed:',
+      error instanceof Error ? error.message : 'Unknown error'
+    );
     const response = NextResponse.json(
       { 
         regular_results: [],
         adult_results: [],
         error: '搜索失败' 
       }, 
-      { status: 500 }
+      {
+        status: 500,
+        headers: getSearchCacheHeaders(0, false),
+      }
     );
     return addCorsHeaders(response);
   }

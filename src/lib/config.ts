@@ -3,6 +3,7 @@
 import { AdminConfig } from './admin.types';
 import { getStorage } from './db';
 import runtimeConfig from './runtime';
+import { mergeFileSources } from './source-config';
 
 export interface ApiSite {
   key: string;
@@ -100,37 +101,10 @@ async function initConfig() {
       const apiSiteEntries = Object.entries(fileConfig.api_site);
 
       if (adminConfig) {
-        // 补全 SourceConfig
-        const existed = new Set(
-          (adminConfig.SourceConfig || []).map((s) => s.key)
+        adminConfig.SourceConfig = mergeFileSources(
+          adminConfig.SourceConfig || [],
+          apiSiteEntries
         );
-        apiSiteEntries.forEach(([key, site]) => {
-          if (!existed.has(key)) {
-            adminConfig!.SourceConfig.push({
-              key,
-              name: site.name,
-              api: site.api,
-              detail: site.detail,
-              from: 'config',
-              disabled: false,
-              is_adult: (site as any).is_adult || false, // 确保 is_adult 字段被正确处理
-            });
-          }
-        });
-
-        // 检查现有源是否在 fileConfig.api_site 中，如果不在则标记为 custom
-        const apiSiteKeys = new Set(apiSiteEntries.map(([key]) => key));
-        adminConfig.SourceConfig.forEach((source) => {
-          if (!apiSiteKeys.has(source.key)) {
-            source.from = 'custom';
-          } else {
-            // 更新现有源的 is_adult 字段
-            const siteConfig = fileConfig.api_site[source.key];
-            if (siteConfig) {
-              source.is_adult = (siteConfig as any).is_adult || false;
-            }
-          }
-        });
 
         const existedUsers = new Set(
           (adminConfig.UserConfig.Users || []).map((u) => u.username)
@@ -184,15 +158,7 @@ async function initConfig() {
             AllowRegister: process.env.NEXT_PUBLIC_ENABLE_REGISTER === 'true',
             Users: allUsers as any,
           },
-          SourceConfig: apiSiteEntries.map(([key, site]) => ({
-            key,
-            name: site.name,
-            api: site.api,
-            detail: site.detail,
-            from: 'config',
-            disabled: false,
-            is_adult: (site as any).is_adult || false, // 确保 is_adult 字段被正确处理
-          })),
+          SourceConfig: mergeFileSources([], apiSiteEntries),
         };
       }
 
@@ -224,14 +190,7 @@ async function initConfig() {
         AllowRegister: process.env.NEXT_PUBLIC_ENABLE_REGISTER === 'true',
         Users: [],
       },
-      SourceConfig: Object.entries(fileConfig.api_site).map(([key, site]) => ({
-        key,
-        name: site.name,
-        api: site.api,
-        detail: site.detail,
-        from: 'config',
-        disabled: false,
-      })),
+      SourceConfig: mergeFileSources([], Object.entries(fileConfig.api_site)),
     } as AdminConfig;
   }
 }
@@ -266,37 +225,14 @@ export async function getConfig(): Promise<AdminConfig> {
     adminConfig.SiteConfig.DoubanProxy =
       process.env.NEXT_PUBLIC_DOUBAN_PROXY || '';
 
-    // 合并文件中的源信息
+    // 文件源是权威配置，同时保留管理员添加的自定义源。
     fileConfig = runtimeConfig as unknown as ConfigFileStruct;
     const apiSiteEntries = Object.entries(fileConfig.api_site);
-    const existed = new Set((adminConfig.SourceConfig || []).map((s) => s.key));
-    apiSiteEntries.forEach(([key, site]) => {
-      if (!existed.has(key)) {
-        adminConfig!.SourceConfig.push({
-          key,
-          name: site.name,
-          api: site.api,
-          detail: site.detail,
-          from: 'config',
-          disabled: false,
-          is_adult: (site as any).is_adult || false, // 确保处理 is_adult 字段
-        });
-      }
-    });
-
-    // 检查现有源是否在 fileConfig.api_site 中，如果不在则标记为 custom
-    const apiSiteKeys = new Set(apiSiteEntries.map(([key]) => key));
-    adminConfig.SourceConfig.forEach((source) => {
-      if (!apiSiteKeys.has(source.key)) {
-        source.from = 'custom';
-      } else {
-        // 更新现有源的 is_adult 字段
-        const siteConfig = fileConfig.api_site[source.key];
-        if (siteConfig) {
-          source.is_adult = (siteConfig as any).is_adult || false;
-        }
-      }
-    });
+    const previousSources = adminConfig.SourceConfig || [];
+    const mergedSources = mergeFileSources(previousSources, apiSiteEntries);
+    const sourceConfigChanged =
+      JSON.stringify(previousSources) !== JSON.stringify(mergedSources);
+    adminConfig.SourceConfig = mergedSources;
 
     const ownerUser = process.env.USERNAME || '';
     // 检查配置中的站长用户是否和 USERNAME 匹配，如果不匹配则降级为普通用户
@@ -317,6 +253,13 @@ export async function getConfig(): Promise<AdminConfig> {
         username: ownerUser,
         role: 'owner',
       });
+    }
+    if (
+      sourceConfigChanged &&
+      storage &&
+      typeof (storage as any).setAdminConfig === 'function'
+    ) {
+      await (storage as any).setAdminConfig(adminConfig);
     }
     cachedConfig = adminConfig;
   } else {
@@ -388,14 +331,7 @@ export async function resetConfig() {
       AllowRegister: process.env.NEXT_PUBLIC_ENABLE_REGISTER === 'true',
       Users: allUsers as any,
     },
-    SourceConfig: apiSiteEntries.map(([key, site]) => ({
-      key,
-      name: site.name,
-      api: site.api,
-      detail: site.detail,
-      from: 'config',
-      disabled: false,
-    })),
+    SourceConfig: mergeFileSources([], apiSiteEntries),
   } as AdminConfig;
 
   if (storage && typeof (storage as any).setAdminConfig === 'function') {
