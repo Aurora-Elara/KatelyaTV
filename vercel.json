@@ -1,4 +1,11 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "*": false,
+      "vercel-upstash": true
+    }
+  },
   "headers": [
     {
       "source": "/fonts/inter-var-latin.woff2",
