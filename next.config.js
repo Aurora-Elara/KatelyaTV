@@ -1,7 +1,12 @@
 /** @type {import('next').NextConfig} */
 /* eslint-disable @typescript-eslint/no-var-requires */
+const isManagedPlatform =
+  process.env.VERCEL === '1' ||
+  process.env.CF_PAGES === '1' ||
+  process.env.CF_PAGES === 'true';
+
 const nextConfig = {
-  output: 'standalone',
+  ...(isManagedPlatform ? {} : { output: 'standalone' }),
   eslint: {
     dirs: ['src'],
   },

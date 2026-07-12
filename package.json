@@ -2,6 +2,9 @@
   "name": "katelyatv",
   "version": "0.7.0-katelya",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "npm run gen:runtime && npm run gen:manifest && next dev -H 0.0.0.0",
     "build": "npm run gen:runtime && npm run gen:manifest && next build",

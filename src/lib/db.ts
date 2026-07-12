@@ -21,6 +21,10 @@ const STORAGE_TYPE =
 // 创建存储实例
 function createStorage(): IStorage {
   const storageType = STORAGE_TYPE;
+
+  if (storageType === 'upstash') {
+    return new UpstashRedisStorage();
+  }
   
   try {
     switch (storageType) {
@@ -28,8 +32,6 @@ function createStorage(): IStorage {
         return new RedisStorage();
       case 'kvrocks':
         return new KvrocksStorage();
-      case 'upstash':
-        return new UpstashRedisStorage();
       case 'd1':
         // 对于 d1，先检查是否可用
         if (typeof globalThis !== 'undefined' && (globalThis as any).DB) {
@@ -183,7 +185,12 @@ export class DbManager {
   // 获取全部用户名
   async getAllUsers(): Promise<string[]> {
     if (typeof (this.storage as any).getAllUsers === 'function') {
-      return (this.storage as any).getAllUsers();
+      const users = await (this.storage as any).getAllUsers();
+      return users
+        .map((user: any) =>
+          typeof user === 'string' ? user : user?.username
+        )
+        .filter(Boolean);
     }
     return [];
   }

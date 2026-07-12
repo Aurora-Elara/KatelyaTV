@@ -3,6 +3,7 @@
 import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
+import { hashPassword, verifyPassword } from './password';
 import { EpisodeSkipConfig, Favorite, IStorage, PlayRecord, User, UserSettings } from './types';
 
 // 搜索历史最大条数
@@ -154,8 +155,10 @@ export class UpstashRedisStorage implements IStorage {
   }
 
   async registerUser(userName: string, password: string): Promise<void> {
-    // 简单存储明文密码，生产环境应加密
-    await withRetry(() => this.client.set(this.userPwdKey(userName), password));
+    const passwordHash = await hashPassword(password);
+    await withRetry(() =>
+      this.client.set(this.userPwdKey(userName), passwordHash)
+    );
   }
 
   async verifyUser(userName: string, password: string): Promise<boolean> {
@@ -163,8 +166,15 @@ export class UpstashRedisStorage implements IStorage {
       this.client.get(this.userPwdKey(userName))
     );
     if (stored === null) return false;
-    // 确保比较时都是字符串类型
-    return ensureString(stored) === password;
+
+    const verification = await verifyPassword(password, ensureString(stored));
+    if (verification.valid && verification.needsRehash) {
+      const passwordHash = await hashPassword(password);
+      await withRetry(() =>
+        this.client.set(this.userPwdKey(userName), passwordHash)
+      );
+    }
+    return verification.valid;
   }
 
   // 检查用户是否存在
@@ -178,9 +188,9 @@ export class UpstashRedisStorage implements IStorage {
 
   // 修改用户密码
   async changePassword(userName: string, newPassword: string): Promise<void> {
-    // 简单存储明文密码，生产环境应加密
+    const passwordHash = await hashPassword(newPassword);
     await withRetry(() =>
-      this.client.set(this.userPwdKey(userName), newPassword)
+      this.client.set(this.userPwdKey(userName), passwordHash)
     );
   }
 
@@ -407,12 +417,14 @@ function getUpstashRedisClient(): Redis {
   let client: Redis | undefined = (global as any)[globalKey] || (global as any)[legacyKey];
 
   if (!client) {
-    const upstashUrl = process.env.UPSTASH_URL;
-    const upstashToken = process.env.UPSTASH_TOKEN;
+    const upstashUrl =
+      process.env.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_URL;
+    const upstashToken =
+      process.env.UPSTASH_REDIS_REST_TOKEN || process.env.UPSTASH_TOKEN;
 
     if (!upstashUrl || !upstashToken) {
       throw new Error(
-        'UPSTASH_URL and UPSTASH_TOKEN env variables must be set'
+        'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN env variables must be set'
       );
     }
 

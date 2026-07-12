@@ -77,7 +77,7 @@
 docker run -d \
   --name katelyatv \
   -p 3000:3000 \
-  -e PASSWORD=your_password \
+  -e AUTH_PASSWORD=your_password \
   --restart unless-stopped \
   ghcr.io/katelya77/katelyatv:latest
 ```
@@ -88,7 +88,7 @@ docker run -d \
 docker run -d \
   --name katelyatv \
   -p 3000:3000 \
-  -e PASSWORD=your_password \
+  -e AUTH_PASSWORD=your_password \
   -v $(pwd)/config.json:/app/config.json:ro \
   --restart unless-stopped \
   ghcr.io/katelya77/katelyatv:latest
@@ -112,7 +112,7 @@ cp .env.redis.example .env
 ```bash
 # 管理员账号（必填）
 USERNAME=admin
-PASSWORD=your_secure_password
+AUTH_PASSWORD=your_secure_password
 
 # 存储配置
 NEXT_PUBLIC_STORAGE_TYPE=redis
@@ -145,7 +145,7 @@ cp .env.kvrocks.example .env
 ```bash
 # 管理员账号（必填，否则无法登录）
 USERNAME=admin
-PASSWORD=your_secure_password
+AUTH_PASSWORD=your_secure_password
 
 # 存储配置
 NEXT_PUBLIC_STORAGE_TYPE=kvrocks
@@ -170,7 +170,7 @@ docker compose -f docker-compose.kvrocks.yml up -d
 2. **部署到 Vercel**：
    - 登录 [Vercel](https://vercel.com/)
    - 导入刚 Fork 的仓库
-   - 添加环境变量：`PASSWORD=your_password`
+   - 添加环境变量：`AUTH_PASSWORD=your_password`
    - 点击 Deploy
 
 #### 多用户配置
@@ -179,19 +179,19 @@ docker compose -f docker-compose.kvrocks.yml up -d
 
    - 访问 [Upstash](https://upstash.com/)
    - 创建免费 Redis 数据库
-   - 获取 `UPSTASH_URL` 和 `UPSTASH_TOKEN`
+   - 获取 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN`
 
 4. **添加环境变量**：
 
 ```bash
 # 存储配置
 NEXT_PUBLIC_STORAGE_TYPE=upstash
-UPSTASH_URL=https://xxx.upstash.io
-UPSTASH_TOKEN=your_token
+UPSTASH_REDIS_REST_URL=https://xxx.upstash.io
+UPSTASH_REDIS_REST_TOKEN=your_token
 
 # 管理员账号
 USERNAME=admin
-PASSWORD=your_password
+AUTH_PASSWORD=your_password
 
 # 功能开关
 NEXT_PUBLIC_ENABLE_REGISTER=true
@@ -222,7 +222,7 @@ NEXT_PUBLIC_ENABLE_REGISTER=true
 ```bash
 # 管理员账号
 USERNAME=admin
-PASSWORD=your_password
+AUTH_PASSWORD=your_password
 
 # 存储配置
 NEXT_PUBLIC_STORAGE_TYPE=d1
@@ -262,7 +262,7 @@ wrangler d1 execute katelyatv-db --file=./scripts/d1-init.sql
 ```bash
 # 确保 .env 包含完整配置
 USERNAME=admin
-PASSWORD=your_secure_password
+AUTH_PASSWORD=your_secure_password
 NEXT_PUBLIC_STORAGE_TYPE=kvrocks
 NEXT_PUBLIC_ENABLE_REGISTER=true
 
@@ -292,8 +292,8 @@ redis-cli -u $REDIS_URL ping
 wrangler d1 info your-database-name
 
 # Upstash连接测试
-curl -H "Authorization: Bearer $UPSTASH_TOKEN" \
-     $UPSTASH_URL/ping
+curl -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+     $UPSTASH_REDIS_REST_URL/ping
 ```
 
 ### 环境变量说明
@@ -301,12 +301,12 @@ curl -H "Authorization: Bearer $UPSTASH_TOKEN" \
 | 变量名                        | 必填   | 说明         | 示例值                   |
 | ----------------------------- | ------ | ------------ | ------------------------ |
 | `USERNAME`                    | 是\*   | 管理员用户名 | `admin`                  |
-| `PASSWORD`                    | 是     | 访问密码     | `your_password`          |
+| `AUTH_PASSWORD`               | 是     | 访问密码     | `your_password`          |
 | `NEXT_PUBLIC_STORAGE_TYPE`    | 否     | 存储类型     | `redis/d1/upstash`       |
 | `NEXT_PUBLIC_ENABLE_REGISTER` | 否     | 用户注册     | `true/false`             |
 | `REDIS_URL`                   | 否\*\* | Redis 连接   | `redis://localhost:6379` |
-| `UPSTASH_URL`                 | 否\*\* | Upstash 地址 | `https://xxx.upstash.io` |
-| `UPSTASH_TOKEN`               | 否\*\* | Upstash 令牌 | `AX_xxx`                 |
+| `UPSTASH_REDIS_REST_URL`      | 否\*\* | Upstash 地址 | `https://xxx.upstash.io` |
+| `UPSTASH_REDIS_REST_TOKEN`    | 否\*\* | Upstash 令牌 | `AX_xxx`                 |
 
 > \*多用户部署必填 \*\*对应存储类型必填
 
@@ -631,7 +631,7 @@ GET /api/admin/analytics
 配合 [OrionTV](https://github.com/zimplexing/OrionTV) 在 Android TV 上使用：
 
 1. 在 OrionTV 中填入 KatelyaTV 部署地址
-2. 输入设置的 PASSWORD
+2. 输入设置的 AUTH_PASSWORD
 3. 即可在电视上观看
 
 ---
@@ -772,7 +772,7 @@ echo "✓ 数据恢复完成"
 | -------------- | ----------------------- | ------------------------------- |
 | 无法访问网站   | 端口未开放/服务未启动   | 检查防火墙和服务状态            |
 | 视频无法播放   | 配置文件错误/源失效     | 验证 config.json 格式和源可用性 |
-| 登录失败       | 密码错误/环境变量未设置 | 检查 PASSWORD 环境变量          |
+| 登录失败       | 密码错误/环境变量未设置 | 检查 AUTH_PASSWORD 环境变量     |
 | 数据库连接失败 | 连接信息错误/服务未启动 | 验证连接字符串和服务状态        |
 | 页面加载缓慢   | 内存不足/缓存失效       | 重启服务或清理缓存              |
 
