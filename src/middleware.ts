@@ -84,6 +84,8 @@ function shouldSkipAuth(pathname: string): boolean {
     '/favicon.ico',
     '/robots.txt',
     '/manifest.json',
+    '/sw.js',
+    '/workbox-',
     '/icons/',
     '/logo.png',
     '/screenshot.png',
