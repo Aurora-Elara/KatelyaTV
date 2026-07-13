@@ -1,0 +1,29 @@
+{
+  "queries": ["仙逆", "哪吒之魔童闹海", "藏海传", "奔跑吧", "舌尖上的中国"],
+  "sources": [
+    {
+      "key": "modu",
+      "name": "魔都动漫",
+      "api": "https://caiji.moduapi.cc/api.php/provide/vod",
+      "expectedTier": "primary"
+    },
+    {
+      "key": "apibdzy",
+      "name": "百度资源",
+      "api": "https://api.apibdzy.com/api.php/provide/vod",
+      "expectedTier": "discovery"
+    },
+    {
+      "key": "ffzy",
+      "name": "非凡影视",
+      "api": "https://cj.ffzyapi.com/api.php/provide/vod",
+      "expectedTier": "discovery"
+    },
+    {
+      "key": "lovedan",
+      "name": "艾旦影视",
+      "api": "https://lovedan.net/api.php/provide/vod",
+      "expectedTier": "discovery"
+    }
+  ]
+}

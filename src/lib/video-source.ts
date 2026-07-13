@@ -23,6 +23,10 @@ export interface VideoSourceTestResult {
   playable: boolean;
   message: string;
   hasError: boolean;
+  height?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  browserCompatible?: boolean;
 }
 
 const QUALITY_RANK: Record<string, number> = {
@@ -38,7 +42,11 @@ const QUALITY_RANK: Record<string, number> = {
 export function createFailedVideoResult(
   failureKind: VideoSourceFailureKind,
   message: string,
-  options: { httpStatus?: number; pingTime?: number; startupTimeMs?: number } = {}
+  options: {
+    httpStatus?: number;
+    pingTime?: number;
+    startupTimeMs?: number;
+  } = {}
 ): VideoSourceTestResult {
   return {
     status: 'failed',
@@ -70,6 +78,7 @@ export function getPlaybackEvidenceTier(
   result: VideoSourceTestResult | undefined
 ): number {
   if (!result) return 3;
+  if (result.browserCompatible === false) return 4;
   if (result.hasError || result.status === 'failed') return 4;
   if (hasMeasuredMediaThroughput(result)) return 0;
   if (result.status === 'ok' && result.playable) return 1;
@@ -91,7 +100,8 @@ export function compareVideoSourceResults(
   a: VideoSourceTestResult | undefined,
   b: VideoSourceTestResult | undefined
 ): number {
-  const tierDifference = getPlaybackEvidenceTier(a) - getPlaybackEvidenceTier(b);
+  const tierDifference =
+    getPlaybackEvidenceTier(a) - getPlaybackEvidenceTier(b);
   if (tierDifference !== 0) return tierDifference;
   if (!a || !b) return 0;
 
@@ -119,7 +129,10 @@ export function sortSourcesByPlaybackResult(
   return [...sources].sort((a, b) => {
     const aKey = `${a.source}-${a.id}`;
     const bKey = `${b.source}-${b.id}`;
-    const result = compareVideoSourceResults(results.get(aKey), results.get(bKey));
+    const result = compareVideoSourceResults(
+      results.get(aKey),
+      results.get(bKey)
+    );
     if (result !== 0) return result;
     if (aKey === currentKey && bKey !== currentKey) return -1;
     if (bKey === currentKey && aKey !== currentKey) return 1;

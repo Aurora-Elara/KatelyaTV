@@ -4,7 +4,17 @@ import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
 import { hashPassword, verifyPassword } from './password';
-import { EpisodeSkipConfig, Favorite, IStorage, PlayRecord, User, UserSettings } from './types';
+import { calculateSourceHealthScore } from './source-health';
+import {
+  EpisodeSkipConfig,
+  Favorite,
+  IStorage,
+  PlayRecord,
+  SourceHealthMetric,
+  SourceHealthScore,
+  User,
+  UserSettings,
+} from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -257,7 +267,7 @@ export class UpstashRedisStorage implements IStorage {
   async getAllUsers(): Promise<User[]> {
     const keys = await withRetry(() => this.client.keys('u:*:pwd'));
     const ownerUsername = process.env.USERNAME || 'admin';
-    
+
     const usernames = keys
       .map((k) => {
         const match = k.match(/^u:(.+?):pwd$/);
@@ -272,7 +282,9 @@ export class UpstashRedisStorage implements IStorage {
         const createdAtKey = `u:${username}:created_at`;
         let created_at = '';
         try {
-          const timestamp = await withRetry(() => this.client.get(createdAtKey));
+          const timestamp = await withRetry(() =>
+            this.client.get(createdAtKey)
+          );
           if (timestamp && typeof timestamp === 'number') {
             created_at = new Date(timestamp).toISOString();
           }
@@ -283,7 +295,7 @@ export class UpstashRedisStorage implements IStorage {
         return {
           username,
           role: username === ownerUsername ? 'owner' : 'user',
-          created_at
+          created_at,
         };
       })
     );
@@ -398,15 +410,216 @@ export class UpstashRedisStorage implements IStorage {
       theme: 'auto',
       language: 'zh-CN',
       auto_play: false,
-      video_quality: 'auto'
+      video_quality: 'auto',
     };
-    const updated: UserSettings = { 
-      ...defaultSettings, 
-      ...current, 
+    const updated: UserSettings = {
+      ...defaultSettings,
+      ...current,
       ...settings,
-      filter_adult_content: settings.filter_adult_content ?? current?.filter_adult_content ?? true
+      filter_adult_content:
+        settings.filter_adult_content ?? current?.filter_adult_content ?? true,
     };
     await this.setUserSettings(userName, updated);
+  }
+
+  // ---------- 匿名来源健康评分 ----------
+  private sourceHealthKey(sourceKey: string, date: string) {
+    return `source:health:${date}:${sourceKey}`;
+  }
+
+  private sourceCircuitKey(sourceKey: string) {
+    return `source:circuit:${sourceKey}`;
+  }
+
+  private sourceFailureKey(sourceKey: string) {
+    return `source:search-fail:${sourceKey}`;
+  }
+
+  private sourceProbeKey(sourceKey: string) {
+    return `source:circuit-probe:${sourceKey}`;
+  }
+
+  async recordSourceHealth(metric: SourceHealthMetric): Promise<void> {
+    const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    const key = this.sourceHealthKey(metric.sourceKey, date);
+
+    await withRetry(async () => {
+      const pipeline = this.client.pipeline();
+      pipeline.hset(key, { lastUpdated: Date.now() });
+      pipeline.expire(key, 8 * 24 * 60 * 60);
+
+      if (metric.phase === 'search') {
+        pipeline.hincrby(key, metric.success ? 'searchOk' : 'searchFail', 1);
+        pipeline.hincrby(key, 'searchCount', 1);
+        pipeline.hincrbyfloat(
+          key,
+          'searchLatencyTotal',
+          Math.max(0, metric.latencyMs || 0)
+        );
+      } else {
+        pipeline.hincrby(
+          key,
+          metric.success ? 'playbackOk' : 'playbackFail',
+          1
+        );
+        pipeline.hincrby(key, 'playbackCount', 1);
+        if (metric.startupTimeMs && metric.startupTimeMs > 0) {
+          pipeline.hincrby(key, 'startupCount', 1);
+          pipeline.hincrbyfloat(key, 'startupTotal', metric.startupTimeMs);
+        }
+        if (metric.speedKBps && metric.speedKBps > 0) {
+          pipeline.hincrby(key, 'speedCount', 1);
+          pipeline.hincrbyfloat(key, 'speedTotal', metric.speedKBps);
+        }
+        if (metric.height && metric.height > 0) {
+          pipeline.hincrby(key, 'heightCount', 1);
+          pipeline.hincrbyfloat(key, 'heightTotal', metric.height);
+        }
+        if (metric.browserCompatible === false) {
+          pipeline.hincrby(key, 'codecIncompatible', 1);
+        }
+      }
+      await pipeline.exec();
+    });
+
+    if (metric.phase !== 'search') return;
+    if (metric.success) {
+      await withRetry(() =>
+        this.client.del(
+          this.sourceFailureKey(metric.sourceKey),
+          this.sourceCircuitKey(metric.sourceKey),
+          this.sourceProbeKey(metric.sourceKey)
+        )
+      );
+      return;
+    }
+
+    const failures = await withRetry(() =>
+      this.client.incr(this.sourceFailureKey(metric.sourceKey))
+    );
+    await withRetry(() =>
+      this.client.expire(this.sourceFailureKey(metric.sourceKey), 30 * 60)
+    );
+    if (failures >= 3) {
+      await withRetry(async () => {
+        const pipeline = this.client.pipeline();
+        pipeline.set(
+          this.sourceCircuitKey(metric.sourceKey),
+          Date.now() + 15 * 60 * 1000,
+          { ex: 24 * 60 * 60 }
+        );
+        pipeline.del(this.sourceProbeKey(metric.sourceKey));
+        await pipeline.exec();
+      });
+    }
+  }
+
+  async isSourceCircuitOpen(sourceKey: string): Promise<boolean> {
+    const openUntil = Number(
+      await withRetry(() => this.client.get(this.sourceCircuitKey(sourceKey)))
+    );
+    if (!Number.isFinite(openUntil) || openUntil <= 0) return false;
+    if (Date.now() < openUntil) return true;
+
+    const acquired = await withRetry(() =>
+      this.client.set(this.sourceProbeKey(sourceKey), '1', {
+        nx: true,
+        ex: 60,
+      })
+    );
+    return acquired !== 'OK';
+  }
+
+  async checkSourceHealthRateLimit(
+    identityHash: string,
+    limit: number,
+    windowSeconds: number
+  ): Promise<boolean> {
+    const key = `source:health:rl:${identityHash}`;
+    const count = await withRetry(() => this.client.incr(key));
+    if (count === 1) {
+      await withRetry(() => this.client.expire(key, windowSeconds));
+    }
+    return count <= limit;
+  }
+
+  async getSourceHealthScores(
+    sourceKeys: string[]
+  ): Promise<Record<string, SourceHealthScore>> {
+    const uniqueKeys = Array.from(new Set(sourceKeys));
+    const days = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setUTCDate(date.getUTCDate() - index);
+      return date.toISOString().slice(0, 10).replaceAll('-', '');
+    });
+    const weights = [1, 0.85, 0.7, 0.55, 0.4, 0.25, 0.1];
+
+    const rows = await withRetry(async () => {
+      const pipeline = this.client.pipeline();
+      uniqueKeys.forEach((sourceKey) =>
+        days.forEach((date) =>
+          pipeline.hgetall(this.sourceHealthKey(sourceKey, date))
+        )
+      );
+      return pipeline.exec();
+    });
+
+    const numberValue = (row: unknown, field: string) => {
+      const value = (row as Record<string, unknown> | null)?.[field];
+      const number = Number(value || 0);
+      return Number.isFinite(number) ? number : 0;
+    };
+    const scores: Record<string, SourceHealthScore> = {};
+    let rowIndex = 0;
+
+    uniqueKeys.forEach((sourceKey) => {
+      let searchOk = 0;
+      let searchCount = 0;
+      let searchLatencyTotal = 0;
+      let playbackOk = 0;
+      let playbackCount = 0;
+      let startupTotal = 0;
+      let startupCount = 0;
+      let speedTotal = 0;
+      let speedCount = 0;
+      let heightTotal = 0;
+      let heightCount = 0;
+      let updatedAt = 0;
+
+      days.forEach((_date, dayIndex) => {
+        const row = rows[rowIndex++];
+        const weight = weights[dayIndex];
+        searchOk += numberValue(row, 'searchOk') * weight;
+        searchCount += numberValue(row, 'searchCount') * weight;
+        searchLatencyTotal += numberValue(row, 'searchLatencyTotal') * weight;
+        playbackOk += numberValue(row, 'playbackOk') * weight;
+        playbackCount += numberValue(row, 'playbackCount') * weight;
+        startupTotal += numberValue(row, 'startupTotal') * weight;
+        startupCount += numberValue(row, 'startupCount') * weight;
+        speedTotal += numberValue(row, 'speedTotal') * weight;
+        speedCount += numberValue(row, 'speedCount') * weight;
+        heightTotal += numberValue(row, 'heightTotal') * weight;
+        heightCount += numberValue(row, 'heightCount') * weight;
+        updatedAt = Math.max(updatedAt, numberValue(row, 'lastUpdated'));
+      });
+
+      scores[sourceKey] = calculateSourceHealthScore({
+        searchOk,
+        searchCount,
+        searchLatencyTotal,
+        playbackOk,
+        playbackCount,
+        startupTotal,
+        startupCount,
+        speedTotal,
+        speedCount,
+        heightTotal,
+        heightCount,
+        updatedAt,
+      });
+    });
+
+    return scores;
   }
 }
 

@@ -2,7 +2,13 @@
 
 import { AdminConfig } from './admin.types';
 import { LocalStorage } from './localstorage.db';
-import { Favorite, IStorage, PlayRecord } from './types';
+import {
+  Favorite,
+  IStorage,
+  PlayRecord,
+  SourceHealthMetric,
+  SourceHealthScore,
+} from './types';
 import { UpstashRedisStorage } from './upstash.db';
 
 const STORAGE_TYPE = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
@@ -156,9 +162,7 @@ export class DbManager {
     if (typeof (this.storage as any).getAllUsers === 'function') {
       const users = await (this.storage as any).getAllUsers();
       return users
-        .map((user: any) =>
-          typeof user === 'string' ? user : user?.username
-        )
+        .map((user: any) => (typeof user === 'string' ? user : user?.username))
         .filter(Boolean);
     }
     return [];
@@ -178,11 +182,37 @@ export class DbManager {
     }
   }
 
+  // ---------- 匿名来源健康评分 ----------
+  async recordSourceHealth(metric: SourceHealthMetric): Promise<void> {
+    await this.storage.recordSourceHealth?.(metric);
+  }
+
+  async getSourceHealthScores(
+    sourceKeys: string[]
+  ): Promise<Record<string, SourceHealthScore>> {
+    return (await this.storage.getSourceHealthScores?.(sourceKeys)) || {};
+  }
+
+  async isSourceCircuitOpen(sourceKey: string): Promise<boolean> {
+    return (await this.storage.isSourceCircuitOpen?.(sourceKey)) || false;
+  }
+
+  async checkSourceHealthRateLimit(
+    identityHash: string,
+    limit: number,
+    windowSeconds: number
+  ): Promise<boolean> {
+    return (
+      (await this.storage.checkSourceHealthRateLimit?.(
+        identityHash,
+        limit,
+        windowSeconds
+      )) ?? true
+    );
+  }
+
   // ---------- 跳过配置 ----------
-  async getSkipConfig(
-    userName: string,
-    key: string
-  ): Promise<any> {
+  async getSkipConfig(userName: string, key: string): Promise<any> {
     if (typeof (this.storage as any).getSkipConfig === 'function') {
       return (this.storage as any).getSkipConfig(userName, key);
     }
@@ -199,19 +229,14 @@ export class DbManager {
     }
   }
 
-  async getAllSkipConfigs(
-    userName: string
-  ): Promise<{ [key: string]: any }> {
+  async getAllSkipConfigs(userName: string): Promise<{ [key: string]: any }> {
     if (typeof (this.storage as any).getAllSkipConfigs === 'function') {
       return (this.storage as any).getAllSkipConfigs(userName);
     }
     return {};
   }
 
-  async deleteSkipConfig(
-    userName: string,
-    key: string
-  ): Promise<void> {
+  async deleteSkipConfig(userName: string, key: string): Promise<void> {
     if (typeof (this.storage as any).deleteSkipConfig === 'function') {
       await (this.storage as any).deleteSkipConfig(userName, key);
     }

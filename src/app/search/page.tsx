@@ -1,11 +1,10 @@
 /* eslint-disable react-hooks/exhaustive-deps, @typescript-eslint/no-explicit-any */
 'use client';
 
-import { ChevronUp, Search, X } from 'lucide-react';
+import { AlertTriangle, ChevronUp, Search, X } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 
-import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import {
   addSearchHistory,
   clearSearchHistory,
@@ -13,6 +12,12 @@ import {
   getSearchHistory,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import {
+  getCanonicalResultKey,
+  mergeUniqueResults,
+  normalizeTitle,
+  ProgressiveSearchEvent,
+} from '@/lib/search-results';
 import { SearchResult } from '@/lib/types';
 
 import PageLayout from '@/components/PageLayout';
@@ -30,13 +35,20 @@ function SearchPageClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  
+  const [candidateResults, setCandidateResults] = useState<SearchResult[]>([]);
+  const [searchProgress, setSearchProgress] = useState({
+    completed: 0,
+    total: 0,
+  });
+  const [isSearchingMore, setIsSearchingMore] = useState(false);
+  const searchAbortRef = useRef<AbortController | null>(null);
+
   // 分组结果状态
   const [groupedResults, setGroupedResults] = useState<{
     regular: SearchResult[];
     adult: SearchResult[];
   } | null>(null);
-  
+
   // 分组标签页状态
   const [activeTab, setActiveTab] = useState<'regular' | 'adult'>('regular');
 
@@ -59,25 +71,35 @@ function SearchPageClient() {
   const aggregateResults = (results: SearchResult[]) => {
     const map = new Map<string, SearchResult[]>();
     results.forEach((item) => {
-      // 使用 title + year + type 作为键
-      const key = `${item.title.replaceAll(' ', '')}-${
-        item.year || 'unknown'
-      }-${item.episodes.length === 1 ? 'movie' : 'tv'}`;
+      const key = getCanonicalResultKey(item);
       const arr = map.get(key) || [];
       arr.push(item);
       map.set(key, arr);
     });
     return Array.from(map.entries()).sort((a, b) => {
-      // 优先排序：标题与搜索词完全一致的排在前面
-      const aExactMatch = a[1][0].title
-        .replaceAll(' ', '')
-        .includes(searchQuery.trim().replaceAll(' ', ''));
-      const bExactMatch = b[1][0].title
-        .replaceAll(' ', '')
-        .includes(searchQuery.trim().replaceAll(' ', ''));
+      const normalizedQuery = normalizeTitle(searchQuery.trim());
+      const aExactMatch = a[1].some(
+        (item) => normalizeTitle(item.title) === normalizedQuery
+      );
+      const bExactMatch = b[1].some(
+        (item) => normalizeTitle(item.title) === normalizedQuery
+      );
 
       if (aExactMatch && !bExactMatch) return -1;
       if (!aExactMatch && bExactMatch) return 1;
+
+      const playablePrimaryCount = (group: SearchResult[]) =>
+        group.filter(
+          (item) => item.source_tier !== 'discovery' && item.episodes.length > 0
+        ).length;
+      const playableDifference =
+        playablePrimaryCount(b[1]) - playablePrimaryCount(a[1]);
+      if (playableDifference !== 0) return playableDifference;
+
+      const bestHealth = (group: SearchResult[]) =>
+        Math.max(...group.map((item) => item.source_health_score || 50));
+      const healthDifference = bestHealth(b[1]) - bestHealth(a[1]);
+      if (healthDifference !== 0) return healthDifference;
 
       // 年份排序
       if (a[1][0].year === b[1][0].year) {
@@ -144,6 +166,7 @@ function SearchPageClient() {
     document.body.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => {
+      searchAbortRef.current?.abort();
       unsubscribe();
       isRunning = false; // 停止 requestAnimationFrame 循环
 
@@ -167,59 +190,88 @@ function SearchPageClient() {
   }, [searchParams]);
 
   const fetchSearchResults = async (query: string) => {
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    const revealTimer = window.setTimeout(() => setIsLoading(false), 2500);
+
     try {
       setIsLoading(true);
-      
-      // 获取用户认证信息
-      const authInfo = getAuthInfoFromBrowserCookie();
-      
-      // 构建请求头
-      const headers: HeadersInit = {};
-      if (authInfo?.username) {
-        headers['Authorization'] = `Bearer ${authInfo.username}`;
-      }
-      
-      // 简化的搜索请求 - 成人内容过滤现在在API层面自动处理
-      // 添加时间戳参数避免缓存问题
-      const timestamp = Date.now();
-      const response = await fetch(
-        `/api/search?q=${encodeURIComponent(query.trim())}&t=${timestamp}`, 
-        { 
-          headers: {
-            ...headers,
-            'Cache-Control': 'no-cache, no-store, must-revalidate'
-          }
-        }
-      );
-      const data = await response.json();
-      
-      // 处理新的搜索结果格式
-      if (data.regular_results || data.adult_results) {
-        // 处理分组结果
-        setGroupedResults({
-          regular: data.regular_results || [],
-          adult: data.adult_results || []
-        });
-        setSearchResults([...(data.regular_results || []), ...(data.adult_results || [])]);
-      } else if (data.grouped) {
-        // 兼容旧的分组格式
-        setGroupedResults({
-          regular: data.regular || [],
-          adult: data.adult || []
-        });
-        setSearchResults([...(data.regular || []), ...(data.adult || [])]);
-      } else {
-        // 兼容旧的普通结果格式
-        setGroupedResults(null);
-        setSearchResults(data.results || []);
-      }
-      
+      setIsSearchingMore(true);
       setShowResults(true);
-    } catch (error) {
       setGroupedResults(null);
       setSearchResults([]);
+      setCandidateResults([]);
+      setSearchProgress({ completed: 0, total: 0 });
+
+      const response = await fetch(
+        `/api/search/progressive?q=${encodeURIComponent(query.trim())}`,
+        { signal: controller.signal }
+      );
+      if (!response.ok || !response.body) {
+        throw new Error(response.status === 401 ? '请重新登录' : '搜索失败');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      let streamComplete = false;
+      while (!streamComplete) {
+        const { value, done } = await reader.read();
+        if (done) {
+          streamComplete = true;
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as ProgressiveSearchEvent;
+          if (event.type === 'source') {
+            if (event.tier === 'discovery') {
+              setCandidateResults((current) =>
+                mergeUniqueResults(current, event.results)
+              );
+            } else {
+              setSearchResults((current) =>
+                mergeUniqueResults(current, event.results)
+              );
+            }
+            if (event.results.length > 0) {
+              window.clearTimeout(revealTimer);
+              setIsLoading(false);
+            }
+          } else if (event.type === 'progress') {
+            setSearchProgress({
+              completed: event.completed,
+              total: event.total,
+            });
+          } else if (event.type === 'done') {
+            setSearchProgress({
+              completed: event.completed,
+              total: event.total,
+            });
+            setIsSearchingMore(false);
+          }
+        }
+      }
+
+      setShowResults(true);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setGroupedResults(null);
+      setSearchResults([]);
+      setCandidateResults([]);
     } finally {
+      window.clearTimeout(revealTimer);
+      if (searchAbortRef.current === controller) {
+        searchAbortRef.current = null;
+      }
       setIsLoading(false);
+      setIsSearchingMore(false);
     }
   };
 
@@ -234,9 +286,6 @@ function SearchPageClient() {
     setShowResults(true);
 
     router.push(`/search?q=${encodeURIComponent(trimmed)}`);
-    // 直接发请求
-    fetchSearchResults(trimmed);
-
     // 保存到搜索历史 (事件监听会自动更新界面)
     addSearchHistory(trimmed);
   };
@@ -287,6 +336,12 @@ function SearchPageClient() {
               <div className='mb-8 flex items-center justify-between'>
                 <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
                   搜索结果
+                  {isSearchingMore && searchProgress.total > 0 && (
+                    <span className='ml-3 text-sm font-normal text-gray-500 dark:text-gray-400'>
+                      正在补充更多来源 {searchProgress.completed}/
+                      {searchProgress.total}
+                    </span>
+                  )}
                 </h2>
                 {/* 聚合开关 */}
                 <label className='flex items-center gap-2 cursor-pointer select-none'>
@@ -307,12 +362,12 @@ function SearchPageClient() {
                   </div>
                 </label>
               </div>
-              
+
               {/* 如果有分组结果且有成人内容，显示分组标签 */}
               {groupedResults && groupedResults.adult.length > 0 && (
-                <div className="mb-6">
-                  <div className="flex items-center justify-center mb-4">
-                    <div className="inline-flex p-1 bg-gray-100 dark:bg-gray-800 rounded-lg">
+                <div className='mb-6'>
+                  <div className='flex items-center justify-center mb-4'>
+                    <div className='inline-flex p-1 bg-gray-100 dark:bg-gray-800 rounded-lg'>
                       <button
                         onClick={() => setActiveTab('regular')}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -336,8 +391,8 @@ function SearchPageClient() {
                     </div>
                   </div>
                   {activeTab === 'adult' && (
-                    <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
-                      <p className="text-sm text-red-600 dark:text-red-400 text-center">
+                    <div className='mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md'>
+                      <p className='text-sm text-red-600 dark:text-red-400 text-center'>
                         ⚠️ 以下内容可能包含成人资源，请确保您已年满18周岁
                       </p>
                     </div>
@@ -350,29 +405,41 @@ function SearchPageClient() {
               >
                 {(() => {
                   // 确定要显示的结果
-                  let displayResults = searchResults;
+                  const primaryKeys = new Set(
+                    searchResults.map(getCanonicalResultKey)
+                  );
+                  const attachedCandidates = candidateResults.filter((item) =>
+                    primaryKeys.has(getCanonicalResultKey(item))
+                  );
+                  let displayResults = mergeUniqueResults(
+                    searchResults,
+                    attachedCandidates
+                  );
                   if (groupedResults && groupedResults.adult.length > 0) {
-                    displayResults = activeTab === 'adult' 
-                      ? groupedResults.adult 
-                      : groupedResults.regular;
+                    displayResults =
+                      activeTab === 'adult'
+                        ? groupedResults.adult
+                        : groupedResults.regular;
                   }
 
                   // 聚合显示模式
                   if (viewMode === 'agg') {
                     const aggregated = aggregateResults(displayResults);
-                    return aggregated.map(([mapKey, group]: [string, SearchResult[]]) => (
-                      <div key={`agg-${mapKey}`} className='w-full'>
-                        <VideoCard
-                          from='search'
-                          items={group}
-                          query={
-                            searchQuery.trim() !== group[0].title
-                              ? searchQuery.trim()
-                              : ''
-                          }
-                        />
-                      </div>
-                    ));
+                    return aggregated.map(
+                      ([mapKey, group]: [string, SearchResult[]]) => (
+                        <div key={`agg-${mapKey}`} className='w-full'>
+                          <VideoCard
+                            from='search'
+                            items={group}
+                            query={
+                              searchQuery.trim() !== group[0].title
+                                ? searchQuery.trim()
+                                : ''
+                            }
+                          />
+                        </div>
+                      )
+                    );
                   }
 
                   // 列表显示模式
@@ -401,12 +468,59 @@ function SearchPageClient() {
                     </div>
                   ));
                 })()}
-                {searchResults.length === 0 && (
-                  <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
-                    未找到相关结果
-                  </div>
-                )}
+                {searchResults.length === 0 &&
+                  candidateResults.length === 0 &&
+                  !isSearchingMore && (
+                    <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
+                      未找到相关结果
+                    </div>
+                  )}
               </div>
+
+              {(() => {
+                const primaryKeys = new Set(
+                  searchResults.map(getCanonicalResultKey)
+                );
+                const candidates = candidateResults.filter(
+                  (item) => !primaryKeys.has(getCanonicalResultKey(item))
+                );
+                if (candidates.length === 0) return null;
+                const groups = aggregateResults(candidates);
+                return (
+                  <div className='mt-12 border-t border-gray-200 pt-8 dark:border-gray-700'>
+                    <div className='mb-6 flex items-center gap-2'>
+                      <AlertTriangle className='h-5 w-5 text-amber-500' />
+                      <h3 className='text-lg font-semibold text-gray-800 dark:text-gray-200'>
+                        候选结果
+                      </h3>
+                      <span className='text-sm text-gray-500 dark:text-gray-400'>
+                        播放待验证
+                      </span>
+                    </div>
+                    <div className='grid grid-cols-3 justify-start gap-x-2 gap-y-14 px-0 sm:grid-cols-[repeat(auto-fill,_minmax(11rem,_1fr))] sm:gap-x-8 sm:gap-y-20 sm:px-2'>
+                      {groups.map(([mapKey, group]) => (
+                        <div
+                          key={`candidate-${mapKey}`}
+                          className='relative w-full'
+                        >
+                          <span className='absolute right-1 top-1 z-10 rounded bg-amber-500 px-2 py-1 text-xs font-medium text-black shadow'>
+                            待验证
+                          </span>
+                          <VideoCard
+                            from='search'
+                            items={group}
+                            query={
+                              searchQuery.trim() !== group[0].title
+                                ? searchQuery.trim()
+                                : ''
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </section>
           ) : searchHistory.length > 0 ? (
             // 搜索历史

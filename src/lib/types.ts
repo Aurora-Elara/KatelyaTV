@@ -49,6 +49,29 @@ export interface User {
   created_at?: string;
 }
 
+export type SourceHealthPhase = 'search' | 'playback';
+
+export interface SourceHealthMetric {
+  sourceKey: string;
+  phase: SourceHealthPhase;
+  success: boolean;
+  failureKind?: string;
+  latencyMs?: number;
+  startupTimeMs?: number;
+  speedKBps?: number;
+  height?: number;
+  browserCompatible?: boolean;
+}
+
+export interface SourceHealthScore {
+  searchScore: number;
+  playbackScore: number;
+  overallScore: number;
+  searchSuccessRate: number;
+  playbackSuccessRate: number;
+  updatedAt: number;
+}
+
 // 存储接口
 export interface IStorage {
   // 播放记录相关
@@ -80,7 +103,10 @@ export interface IStorage {
   // 用户设置相关
   getUserSettings(userName: string): Promise<UserSettings | null>;
   setUserSettings(userName: string, settings: UserSettings): Promise<void>;
-  updateUserSettings(userName: string, settings: Partial<UserSettings>): Promise<void>;
+  updateUserSettings(
+    userName: string,
+    settings: Partial<UserSettings>
+  ): Promise<void>;
 
   // 搜索历史相关
   getSearchHistory(userName: string): Promise<string[]>;
@@ -88,9 +114,18 @@ export interface IStorage {
   deleteSearchHistory(userName: string, keyword?: string): Promise<void>;
 
   // 片头片尾跳过配置相关
-  getSkipConfig(userName: string, key: string): Promise<EpisodeSkipConfig | null>;
-  setSkipConfig(userName: string, key: string, config: EpisodeSkipConfig): Promise<void>;
-  getAllSkipConfigs(userName: string): Promise<{ [key: string]: EpisodeSkipConfig }>;
+  getSkipConfig(
+    userName: string,
+    key: string
+  ): Promise<EpisodeSkipConfig | null>;
+  setSkipConfig(
+    userName: string,
+    key: string,
+    config: EpisodeSkipConfig
+  ): Promise<void>;
+  getAllSkipConfigs(
+    userName: string
+  ): Promise<{ [key: string]: EpisodeSkipConfig }>;
   deleteSkipConfig(userName: string, key: string): Promise<void>;
 
   // 用户列表
@@ -99,6 +134,18 @@ export interface IStorage {
   // 管理员配置相关
   getAdminConfig(): Promise<AdminConfig | null>;
   setAdminConfig(config: AdminConfig): Promise<void>;
+
+  // 匿名来源健康数据仅由支持的服务端存储实现。
+  recordSourceHealth?(metric: SourceHealthMetric): Promise<void>;
+  getSourceHealthScores?(
+    sourceKeys: string[]
+  ): Promise<Record<string, SourceHealthScore>>;
+  isSourceCircuitOpen?(sourceKey: string): Promise<boolean>;
+  checkSourceHealthRateLimit?(
+    identityHash: string,
+    limit: number,
+    windowSeconds: number
+  ): Promise<boolean>;
 }
 
 // 搜索结果数据结构
@@ -114,6 +161,8 @@ export interface SearchResult {
   desc?: string;
   type_name?: string;
   douban_id?: number;
+  source_tier?: 'primary' | 'discovery';
+  source_health_score?: number;
 }
 
 // 豆瓣数据结构
@@ -139,6 +188,7 @@ export interface ApiSite {
   type?: number;
   playMode?: 'parse' | 'direct';
   is_adult?: boolean; // 新增：是否为成人内容资源站
+  tier?: 'primary' | 'discovery';
 }
 
 // 配置文件结构

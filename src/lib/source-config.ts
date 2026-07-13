@@ -6,6 +6,7 @@ type FileSource = {
   name: string;
   detail?: string;
   is_adult?: boolean;
+  tier?: 'primary' | 'discovery';
 };
 
 export function mergeFileSources(
@@ -28,12 +29,16 @@ export function mergeFileSources(
       from: 'config',
       disabled: current?.disabled ?? false,
       is_adult: source.is_adult === true,
+      tier: source.tier || 'primary',
     };
   });
 
-  const customSources = currentSources.filter(
-    (source) => source.from === 'custom' && !fileKeys.has(source.key)
-  );
+  const customSources = currentSources
+    .filter((source) => source.from === 'custom' && !fileKeys.has(source.key))
+    .map((source) => ({
+      ...source,
+      tier: source.tier || ('discovery' as const),
+    }));
 
   return [...mergedFileSources, ...customSources];
 }

@@ -36,13 +36,40 @@ describe('video source ranking', () => {
     expect(getPlaybackEvidenceTier(undefined)).toBe(3);
     expect(getPlaybackEvidenceTier(failed)).toBe(4);
     expect(compareVideoSourceResults(measured, playable)).toBeLessThan(0);
+    expect(getPlaybackEvidenceTier(success({ browserCompatible: false }))).toBe(
+      4
+    );
   });
 
   it('keeps failed sources at the end and preserves the current source on ties', () => {
     const sources = [
-      { id: '1', source: 'failed', title: 'A', poster: '', episodes: [], source_name: 'A', year: '' },
-      { id: '2', source: 'current', title: 'A', poster: '', episodes: [], source_name: 'B', year: '' },
-      { id: '3', source: 'unknown', title: 'A', poster: '', episodes: [], source_name: 'C', year: '' },
+      {
+        id: '1',
+        source: 'failed',
+        title: 'A',
+        poster: '',
+        episodes: [],
+        source_name: 'A',
+        year: '',
+      },
+      {
+        id: '2',
+        source: 'current',
+        title: 'A',
+        poster: '',
+        episodes: [],
+        source_name: 'B',
+        year: '',
+      },
+      {
+        id: '3',
+        source: 'unknown',
+        title: 'A',
+        poster: '',
+        episodes: [],
+        source_name: 'C',
+        year: '',
+      },
     ];
     const results = new Map([
       ['failed-1', createFailedVideoResult('network', '网络失败')],
@@ -63,9 +90,33 @@ describe('video source ranking', () => {
 
   it('selects the next untried source for the current episode', () => {
     const sources = [
-      { id: '1', source: 'current', title: 'A', poster: '', episodes: ['a.m3u8'], source_name: 'A', year: '' },
-      { id: '2', source: 'failed', title: 'A', poster: '', episodes: ['b.m3u8'], source_name: 'B', year: '' },
-      { id: '3', source: 'next', title: 'A', poster: '', episodes: ['c.m3u8'], source_name: 'C', year: '' },
+      {
+        id: '1',
+        source: 'current',
+        title: 'A',
+        poster: '',
+        episodes: ['a.m3u8'],
+        source_name: 'A',
+        year: '',
+      },
+      {
+        id: '2',
+        source: 'failed',
+        title: 'A',
+        poster: '',
+        episodes: ['b.m3u8'],
+        source_name: 'B',
+        year: '',
+      },
+      {
+        id: '3',
+        source: 'next',
+        title: 'A',
+        poster: '',
+        episodes: ['c.m3u8'],
+        source_name: 'C',
+        year: '',
+      },
     ];
     const results = new Map<string, VideoSourceTestResult>([
       ['failed-2', createFailedVideoResult('http', 'HTTP 403')],
@@ -85,8 +136,24 @@ describe('video source ranking', () => {
 
   it('returns null when every candidate failed or lacks the current episode', () => {
     const sources = [
-      { id: '2', source: 'failed', title: 'A', poster: '', episodes: ['b.m3u8'], source_name: 'B', year: '' },
-      { id: '3', source: 'short', title: 'A', poster: '', episodes: [], source_name: 'C', year: '' },
+      {
+        id: '2',
+        source: 'failed',
+        title: 'A',
+        poster: '',
+        episodes: ['b.m3u8'],
+        source_name: 'B',
+        year: '',
+      },
+      {
+        id: '3',
+        source: 'short',
+        title: 'A',
+        poster: '',
+        episodes: [],
+        source_name: 'C',
+        year: '',
+      },
     ];
     const results = new Map<string, VideoSourceTestResult>([
       ['failed-2', createFailedVideoResult('network', '网络失败')],

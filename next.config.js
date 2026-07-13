@@ -4,6 +4,7 @@ const isManagedPlatform =
   process.env.VERCEL === '1' ||
   process.env.CF_PAGES === '1' ||
   process.env.CF_PAGES === 'true';
+const defaultRuntimeCaching = require('next-pwa/cache');
 
 const nextConfig = {
   ...(isManagedPlatform ? {} : { output: 'standalone' }),
@@ -74,6 +75,14 @@ const withPWA = require('next-pwa')({
   disable: process.env.NODE_ENV === 'development',
   register: true,
   skipWaiting: true,
+  runtimeCaching: [
+    {
+      urlPattern: /\/api\/(?:search\/progressive|source-health)(?:\?.*)?$/,
+      handler: 'NetworkOnly',
+      method: 'GET',
+    },
+    ...defaultRuntimeCaching,
+  ],
 });
 
 module.exports = withPWA(nextConfig);

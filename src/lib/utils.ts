@@ -173,9 +173,7 @@ export function getVideoResolutionFromM3u8(
 ): Promise<VideoSourceTestResult> {
   const timeoutMs = options.timeoutMs || 8000;
   if (!m3u8Url) {
-    return Promise.resolve(
-      createFailedVideoResult('manifest', '播放地址为空')
-    );
+    return Promise.resolve(createFailedVideoResult('manifest', '播放地址为空'));
   }
   if (options.signal?.aborted) {
     return Promise.reject(new DOMException('Aborted', 'AbortError'));
@@ -249,10 +247,42 @@ export function getVideoResolutionFromM3u8(
       return video.videoWidth || levelWidth;
     };
 
+    const getMediaInfo = () => {
+      const highestLevel = [...hls.levels].sort(
+        (a, b) => (b.height || 0) - (a.height || 0)
+      )[0];
+      const videoCodec = highestLevel?.videoCodec || undefined;
+      const audioCodec = highestLevel?.audioCodec || undefined;
+      const codecs = [videoCodec, audioCodec].filter(Boolean).join(',');
+      const browserCompatible =
+        !codecs ||
+        typeof MediaSource === 'undefined' ||
+        MediaSource.isTypeSupported(`video/mp4; codecs="${codecs}"`);
+      return {
+        height: video.videoHeight || highestLevel?.height || 0,
+        videoCodec,
+        audioCodec,
+        browserCompatible,
+      };
+    };
+
     const maybeFinish = () => {
       if (!manifestLoaded || (!metadataLoaded && !fragmentLoaded)) return;
       const startupTimeMs = performance.now() - startedAt;
       const measuredSpeed = Number.isFinite(speedKBps) ? speedKBps : 0;
+      const mediaInfo = getMediaInfo();
+      if (!mediaInfo.browserCompatible) {
+        const failure = createFailedVideoResult(
+          'media',
+          '当前浏览器不支持该视频编码',
+          {
+            pingTime: Math.round(pingTime),
+            startupTimeMs: Math.round(startupTimeMs),
+          }
+        );
+        finish({ ...failure, ...mediaInfo });
+        return;
+      }
       finish({
         status: fragmentLoaded ? 'ok' : 'partial',
         quality: qualityFromWidth(getDetectedWidth()),
@@ -263,6 +293,7 @@ export function getVideoResolutionFromM3u8(
         playable: true,
         message: fragmentLoaded ? '播放正常' : '播放清单可用',
         hasError: false,
+        ...mediaInfo,
       });
     };
 
@@ -317,21 +348,14 @@ export function getVideoResolutionFromM3u8(
         retryTimer = setTimeout(() => hls.startLoad(), 500);
         return;
       }
-      if (
-        data.type === Hls.ErrorTypes.MEDIA_ERROR &&
-        mediaRecoveryCount < 1
-      ) {
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveryCount < 1) {
         mediaRecoveryCount += 1;
         hls.recoverMediaError();
         return;
       }
 
       finish(
-        createHlsFailureResult(
-          data,
-          performance.now() - startedAt,
-          pingTime
-        )
+        createHlsFailureResult(data, performance.now() - startedAt, pingTime)
       );
     });
 

@@ -80,6 +80,7 @@ export async function POST(request: NextRequest) {
           from: 'custom',
           disabled: false,
           is_adult: is_adult || false, // 确保处理 is_adult 字段
+          tier: 'discovery',
         });
         break;
       }

@@ -10,6 +10,7 @@ describe('mergeFileSources', () => {
 
     expect(entries.map(([key]) => key)).toEqual([
       'gszy',
+      'modu',
       'sb',
       'hn',
       'maoyan',
@@ -24,6 +25,9 @@ describe('mergeFileSources', () => {
       'bfzy',
       'huyazy',
       'ikun',
+      'apibdzy',
+      'ffzy',
+      'lovedan',
     ]);
     expect(fileConfig.api_site.gszy.api).toBe(
       'https://api.guangsuapi.com/api.php/provide/vod'
@@ -66,7 +70,7 @@ describe('mergeFileSources', () => {
       'new-source',
       'custom',
     ]);
-    expect(result[1]).toEqual(current[1]);
+    expect(result[1]).toEqual({ ...current[1], tier: 'discovery' });
   });
 
   it('uses file values while preserving the disabled state', () => {
@@ -101,6 +105,7 @@ describe('mergeFileSources', () => {
         from: 'config',
         disabled: true,
         is_adult: false,
+        tier: 'primary',
       },
     ]);
   });

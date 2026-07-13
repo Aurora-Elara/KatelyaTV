@@ -6,6 +6,12 @@
       "name": "光速资源",
       "is_adult": false
     },
+    "modu": {
+      "api": "https://caiji.moduapi.cc/api.php/provide/vod",
+      "name": "魔都动漫",
+      "is_adult": false,
+      "tier": "primary"
+    },
     "sb": {
       "api": "https://subocj.com/api.php/provide/vod",
       "name": "速播资源",
@@ -75,6 +81,24 @@
       "api": "https://ikunzyapi.com/api.php/provide/vod",
       "name": "iKun资源",
       "is_adult": false
+    },
+    "apibdzy": {
+      "api": "https://api.apibdzy.com/api.php/provide/vod",
+      "name": "百度资源",
+      "is_adult": false,
+      "tier": "discovery"
+    },
+    "ffzy": {
+      "api": "https://cj.ffzyapi.com/api.php/provide/vod",
+      "name": "非凡影视",
+      "is_adult": false,
+      "tier": "discovery"
+    },
+    "lovedan": {
+      "api": "https://lovedan.net/api.php/provide/vod",
+      "name": "艾旦影视",
+      "is_adult": false,
+      "tier": "discovery"
     }
   }
 }

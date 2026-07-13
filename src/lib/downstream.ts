@@ -17,10 +17,76 @@ interface ApiSearchItem {
   type_name?: string;
 }
 
+interface ApiSearchResponse {
+  list?: ApiSearchItem[];
+  pagecount?: number;
+}
+
+export interface SearchHealthEvent {
+  ok: boolean;
+  latencyMs: number;
+  failureKind?: 'http' | 'timeout' | 'network' | 'invalid';
+}
+
+export interface SearchFromApiOptions {
+  timeoutMs?: number;
+  maxPages?: number;
+  signal?: AbortSignal;
+  onHealth?: (event: SearchHealthEvent) => void | Promise<void>;
+}
+
+function normalizeSearchTitle(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function createRequestController(
+  timeoutMs: number,
+  signal?: AbortSignal
+): { controller: AbortController; cleanup: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, timeoutMs);
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+    },
+  };
+}
+
+async function fetchWithRequestControl(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<Response> {
+  const request = createRequestController(timeoutMs, signal);
+  try {
+    return await fetch(url, { ...init, signal: request.controller.signal });
+  } finally {
+    request.cleanup();
+  }
+}
+
 export async function searchFromApi(
   apiSite: ApiSite,
-  query: string
+  query: string,
+  options: SearchFromApiOptions = {}
 ): Promise<SearchResult[]> {
+  const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs || 8000;
+  const notifyHealth = async (event: SearchHealthEvent) => {
+    try {
+      await options.onHealth?.(event);
+    } catch {
+      // Health telemetry must not affect search results.
+    }
+  };
   try {
     const apiBaseUrl = apiSite.api;
     const apiUrl =
@@ -28,30 +94,45 @@ export async function searchFromApi(
     const apiName = apiSite.name;
 
     // 添加超时处理
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const response = await fetch(apiUrl, {
-      headers: API_CONFIG.search.headers,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
+    const response = await fetchWithRequestControl(
+      apiUrl,
+      {
+        headers: API_CONFIG.search.headers,
+      },
+      timeoutMs,
+      options.signal
+    );
 
     if (!response.ok) {
       console.warn(
         `[downstream:${apiSite.key}] search returned HTTP ${response.status}`
       );
+      await notifyHealth({
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        failureKind: 'http',
+      });
       return [];
     }
 
-    const data = await response.json();
+    let data: ApiSearchResponse;
+    try {
+      data = (await response.json()) as ApiSearchResponse;
+    } catch {
+      await notifyHealth({
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        failureKind: 'invalid',
+      });
+      return [];
+    }
     if (
       !data ||
       !data.list ||
       !Array.isArray(data.list) ||
       data.list.length === 0
     ) {
+      await notifyHealth({ ok: true, latencyMs: Date.now() - startedAt });
       return [];
     }
     // 处理第一页结果
@@ -92,16 +173,26 @@ export async function searchFromApi(
         desc: cleanHtmlTags(item.vod_content || ''),
         type_name: item.type_name,
         douban_id: item.vod_douban_id,
+        source_tier: apiSite.tier || 'primary',
       };
     });
 
     const config = await getConfig();
-    const MAX_SEARCH_PAGES: number = config.SiteConfig.SearchDownstreamMaxPage;
+    const MAX_SEARCH_PAGES: number = Math.min(
+      options.maxPages || config.SiteConfig.SearchDownstreamMaxPage,
+      3
+    );
 
     // 获取总页数
     const pageCount = data.pagecount || 1;
     // 确定需要获取的额外页数
-    const pagesToFetch = Math.min(pageCount - 1, MAX_SEARCH_PAGES - 1);
+    const hasExactMatch = results.some(
+      (item: SearchResult) =>
+        normalizeSearchTitle(item.title) === normalizeSearchTitle(query)
+    );
+    const pagesToFetch = hasExactMatch
+      ? 0
+      : Math.min(pageCount - 1, MAX_SEARCH_PAGES - 1);
 
     // 如果有额外页数，获取更多页的结果
     if (pagesToFetch > 0) {
@@ -116,18 +207,14 @@ export async function searchFromApi(
 
         const pagePromise = (async () => {
           try {
-            const pageController = new AbortController();
-            const pageTimeoutId = setTimeout(
-              () => pageController.abort(),
-              8000
+            const pageResponse = await fetchWithRequestControl(
+              pageUrl,
+              {
+                headers: API_CONFIG.search.headers,
+              },
+              timeoutMs,
+              options.signal
             );
-
-            const pageResponse = await fetch(pageUrl, {
-              headers: API_CONFIG.search.headers,
-              signal: pageController.signal,
-            });
-
-            clearTimeout(pageTimeoutId);
 
             if (!pageResponse.ok) {
               console.warn(
@@ -170,6 +257,7 @@ export async function searchFromApi(
                 desc: cleanHtmlTags(item.vod_content || ''),
                 type_name: item.type_name,
                 douban_id: item.vod_douban_id,
+                source_tier: apiSite.tier || 'primary',
               };
             });
           } catch (error) {
@@ -195,12 +283,21 @@ export async function searchFromApi(
       });
     }
 
+    await notifyHealth({ ok: true, latencyMs: Date.now() - startedAt });
     return results;
   } catch (error) {
     console.warn(
       `[downstream:${apiSite.key}] search failed:`,
       error instanceof Error ? error.message : 'Unknown error'
     );
+    await notifyHealth({
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      failureKind:
+        error instanceof DOMException && error.name === 'AbortError'
+          ? 'timeout'
+          : 'network',
+    });
     return [];
   }
 }
@@ -284,6 +381,7 @@ export async function getDetailFromApi(
     desc: cleanHtmlTags(videoDetail.vod_content),
     type_name: videoDetail.type_name,
     douban_id: videoDetail.vod_douban_id,
+    source_tier: apiSite.tier || 'primary',
   };
 }
 
@@ -358,5 +456,6 @@ async function handleSpecialSourceDetail(
     desc: descText,
     type_name: '',
     douban_id: 0,
+    source_tier: apiSite.tier || 'primary',
   };
 }

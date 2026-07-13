@@ -4,13 +4,9 @@
 
 import { RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import React, {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
+import { reportPlaybackHealth } from '@/lib/source-health.client';
 import { SearchResult } from '@/lib/types';
 import { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';
 import {
@@ -129,6 +125,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
           source.episodes[episodeIndex],
           { timeoutMs: 8000, signal: controller.signal }
         );
+        reportPlaybackHealth(source.source, info);
         setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
       } catch (error) {
         if (!(error instanceof DOMException && error.name === 'AbortError')) {
@@ -220,7 +217,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
     if (categoryContainerRef.current && buttonRefs.current[currentPage]) {
       const container = categoryContainerRef.current;
       const button = buttonRefs.current[currentPage];
-      
+
       if (button) {
         const containerRect = container.getBoundingClientRect();
         const buttonRect = button.getBoundingClientRect();
@@ -390,7 +387,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                         ? 'bg-green-500 text-white shadow-lg shadow-green-500/25 dark:bg-green-600'
                         : 'bg-gray-200 text-gray-700 hover:bg-gray-300 hover:scale-105 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/20'
                     }`.trim()}
-                  type="button"
+                  type='button'
                 >
                   {episodeNumber}
                 </button>
@@ -444,21 +441,22 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                   availableSources,
                   videoInfoMap,
                   `${currentSource}-${currentId}`
-                )
-                  .map((source, index) => {
-                    const sourceKey = `${source.source}-${source.id}`;
-                    const videoInfo = videoInfoMap.get(sourceKey);
-                    const isFailed = videoInfo?.hasError === true;
-                    const isCurrentSource =
-                      source.source?.toString() === currentSource?.toString() &&
-                      source.id?.toString() === currentId?.toString();
-                    return (
-                      <div
-                        key={`${source.source}-${source.id}`}
-                        onClick={() =>
-                          !isCurrentSource && !isFailed && handleSourceClick(source)
-                        }
-                        className={`flex items-start gap-3 px-2 py-3 rounded-lg transition-all select-none duration-200 relative
+                ).map((source, index) => {
+                  const sourceKey = `${source.source}-${source.id}`;
+                  const videoInfo = videoInfoMap.get(sourceKey);
+                  const isFailed = videoInfo?.hasError === true;
+                  const isCurrentSource =
+                    source.source?.toString() === currentSource?.toString() &&
+                    source.id?.toString() === currentId?.toString();
+                  return (
+                    <div
+                      key={`${source.source}-${source.id}`}
+                      onClick={() =>
+                        !isCurrentSource &&
+                        !isFailed &&
+                        handleSourceClick(source)
+                      }
+                      className={`flex items-start gap-3 px-2 py-3 rounded-lg transition-all select-none duration-200 relative
                           ${
                             isCurrentSource
                               ? 'bg-green-500/10 dark:bg-green-500/20 border-green-500/30 border'
@@ -466,138 +464,138 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                               ? 'bg-red-500/5 dark:bg-red-500/10 opacity-80'
                               : 'hover:bg-gray-200/50 dark:hover:bg-white/10 hover:scale-[1.02] cursor-pointer'
                           }`.trim()}
-                      >
-                        {/* 封面 */}
-                        <div className='flex-shrink-0 w-12 h-20 bg-gray-300 dark:bg-gray-600 rounded overflow-hidden'>
-                          {source.episodes && source.episodes.length > 0 && (
-                            <img
-                              src={processImageUrl(source.poster)}
-                              alt={source.title}
-                              className='w-full h-full object-cover'
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                target.style.display = 'none';
-                              }}
-                            />
+                    >
+                      {/* 封面 */}
+                      <div className='flex-shrink-0 w-12 h-20 bg-gray-300 dark:bg-gray-600 rounded overflow-hidden'>
+                        {source.episodes && source.episodes.length > 0 && (
+                          <img
+                            src={processImageUrl(source.poster)}
+                            alt={source.title}
+                            className='w-full h-full object-cover'
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement;
+                              target.style.display = 'none';
+                            }}
+                          />
+                        )}
+                      </div>
+
+                      {/* 信息区域 */}
+                      <div className='flex-1 min-w-0 flex flex-col justify-between h-20'>
+                        {/* 标题和分辨率 - 顶部 */}
+                        <div className='flex items-start justify-between gap-3 h-6'>
+                          <div className='flex-1 min-w-0 relative group/title'>
+                            <h3 className='font-medium text-base text-gray-900 dark:text-gray-100 leading-none flex items-center gap-1.5 min-w-0'>
+                              <span className='truncate'>{source.title}</span>
+                              {isTrailerTitle(source.title) && (
+                                <span className='flex-shrink-0 text-[10px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400'>
+                                  预告
+                                </span>
+                              )}
+                            </h3>
+                            {/* 标题级别的 tooltip - 第一个元素不显示 */}
+                            {index !== 0 && (
+                              <div className='absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-1 bg-gray-800 text-white text-xs rounded-md shadow-lg opacity-0 invisible group-hover/title:opacity-100 group-hover/title:visible transition-all duration-200 ease-out delay-100 whitespace-nowrap z-[500] pointer-events-none'>
+                                {source.title}
+                                <div className='absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-800'></div>
+                              </div>
+                            )}
+                          </div>
+                          {(() => {
+                            if (videoInfo && videoInfo.quality !== '未知') {
+                              if (videoInfo.hasError) {
+                                return (
+                                  <div className='bg-gray-500/10 dark:bg-gray-400/20 text-red-600 dark:text-red-400 px-1.5 py-0 rounded text-xs flex-shrink-0 min-w-[50px] text-center'>
+                                    检测失败
+                                  </div>
+                                );
+                              } else {
+                                // 根据分辨率设置不同颜色：2K、4K为紫色，1080p、720p为绿色，其他为黄色
+                                const isUltraHigh = ['4K', '2K'].includes(
+                                  videoInfo.quality
+                                );
+                                const isHigh = ['1080p', '720p'].includes(
+                                  videoInfo.quality
+                                );
+                                const textColorClasses = isUltraHigh
+                                  ? 'text-purple-600 dark:text-purple-400'
+                                  : isHigh
+                                  ? 'text-green-600 dark:text-green-400'
+                                  : 'text-yellow-600 dark:text-yellow-400';
+
+                                return (
+                                  <div
+                                    className={`bg-gray-500/10 dark:bg-gray-400/20 ${textColorClasses} px-1.5 py-0 rounded text-xs flex-shrink-0 min-w-[50px] text-center`}
+                                  >
+                                    {videoInfo.quality}
+                                  </div>
+                                );
+                              }
+                            }
+
+                            return null;
+                          })()}
+                        </div>
+
+                        {/* 源名称和集数信息 - 垂直居中 */}
+                        <div className='flex items-center justify-between'>
+                          <span className='text-xs px-2 py-1 border border-gray-500/60 rounded text-gray-700 dark:text-gray-300'>
+                            {source.source_name}
+                          </span>
+                          {source.episodes.length > 1 && (
+                            <span className='text-xs text-gray-500 dark:text-gray-400 font-medium'>
+                              {source.episodes.length} 集
+                            </span>
                           )}
                         </div>
 
-                        {/* 信息区域 */}
-                        <div className='flex-1 min-w-0 flex flex-col justify-between h-20'>
-                          {/* 标题和分辨率 - 顶部 */}
-                          <div className='flex items-start justify-between gap-3 h-6'>
-                            <div className='flex-1 min-w-0 relative group/title'>
-                              <h3 className='font-medium text-base text-gray-900 dark:text-gray-100 leading-none flex items-center gap-1.5 min-w-0'>
-                                <span className='truncate'>{source.title}</span>
-                                {isTrailerTitle(source.title) && (
-                                  <span className='flex-shrink-0 text-[10px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400'>
-                                    预告
-                                  </span>
-                                )}
-                              </h3>
-                              {/* 标题级别的 tooltip - 第一个元素不显示 */}
-                              {index !== 0 && (
-                                <div className='absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-1 bg-gray-800 text-white text-xs rounded-md shadow-lg opacity-0 invisible group-hover/title:opacity-100 group-hover/title:visible transition-all duration-200 ease-out delay-100 whitespace-nowrap z-[500] pointer-events-none'>
-                                  {source.title}
-                                  <div className='absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-800'></div>
-                                </div>
-                              )}
-                            </div>
-                            {(() => {
-                              if (videoInfo && videoInfo.quality !== '未知') {
-                                if (videoInfo.hasError) {
-                                  return (
-                                    <div className='bg-gray-500/10 dark:bg-gray-400/20 text-red-600 dark:text-red-400 px-1.5 py-0 rounded text-xs flex-shrink-0 min-w-[50px] text-center'>
-                                      检测失败
+                        {/* 网络信息 - 底部 */}
+                        <div className='flex items-end h-6'>
+                          {(() => {
+                            if (videoInfo) {
+                              if (!videoInfo.hasError) {
+                                return (
+                                  <div className='flex items-end gap-3 text-xs'>
+                                    <div className='text-green-600 dark:text-green-400 font-medium text-xs'>
+                                      {videoInfo.loadSpeed}
                                     </div>
-                                  );
-                                } else {
-                                  // 根据分辨率设置不同颜色：2K、4K为紫色，1080p、720p为绿色，其他为黄色
-                                  const isUltraHigh = ['4K', '2K'].includes(
-                                    videoInfo.quality
-                                  );
-                                  const isHigh = ['1080p', '720p'].includes(
-                                    videoInfo.quality
-                                  );
-                                  const textColorClasses = isUltraHigh
-                                    ? 'text-purple-600 dark:text-purple-400'
-                                    : isHigh
-                                    ? 'text-green-600 dark:text-green-400'
-                                    : 'text-yellow-600 dark:text-yellow-400';
-
-                                  return (
-                                    <div
-                                      className={`bg-gray-500/10 dark:bg-gray-400/20 ${textColorClasses} px-1.5 py-0 rounded text-xs flex-shrink-0 min-w-[50px] text-center`}
+                                    <div className='text-orange-600 dark:text-orange-400 font-medium text-xs'>
+                                      {videoInfo.pingTime}ms
+                                    </div>
+                                  </div>
+                                );
+                              } else {
+                                return (
+                                  <div className='flex items-center gap-1 min-w-0 w-full'>
+                                    <span
+                                      className='text-red-500/90 dark:text-red-400 font-medium text-xs truncate'
+                                      title={videoInfo.message}
                                     >
-                                      {videoInfo.quality}
-                                    </div>
-                                  );
-                                }
+                                      {videoInfo.message}
+                                    </span>
+                                    <button
+                                      type='button'
+                                      title='重新检测此线路'
+                                      aria-label='重新检测此线路'
+                                      className='ml-auto flex-shrink-0 p-1 text-gray-500 hover:text-green-500 transition-colors'
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        retrySource(source);
+                                      }}
+                                    >
+                                      <RefreshCw className='w-3.5 h-3.5' />
+                                    </button>
+                                  </div>
+                                );
                               }
-
-                              return null;
-                            })()}
-                          </div>
-
-                          {/* 源名称和集数信息 - 垂直居中 */}
-                          <div className='flex items-center justify-between'>
-                            <span className='text-xs px-2 py-1 border border-gray-500/60 rounded text-gray-700 dark:text-gray-300'>
-                              {source.source_name}
-                            </span>
-                            {source.episodes.length > 1 && (
-                              <span className='text-xs text-gray-500 dark:text-gray-400 font-medium'>
-                                {source.episodes.length} 集
-                              </span>
-                            )}
-                          </div>
-
-                          {/* 网络信息 - 底部 */}
-                          <div className='flex items-end h-6'>
-                            {(() => {
-                              if (videoInfo) {
-                                if (!videoInfo.hasError) {
-                                  return (
-                                    <div className='flex items-end gap-3 text-xs'>
-                                      <div className='text-green-600 dark:text-green-400 font-medium text-xs'>
-                                        {videoInfo.loadSpeed}
-                                      </div>
-                                      <div className='text-orange-600 dark:text-orange-400 font-medium text-xs'>
-                                        {videoInfo.pingTime}ms
-                                      </div>
-                                    </div>
-                                  );
-                                } else {
-                                  return (
-                                    <div className='flex items-center gap-1 min-w-0 w-full'>
-                                      <span
-                                        className='text-red-500/90 dark:text-red-400 font-medium text-xs truncate'
-                                        title={videoInfo.message}
-                                      >
-                                        {videoInfo.message}
-                                      </span>
-                                      <button
-                                        type='button'
-                                        title='重新检测此线路'
-                                        aria-label='重新检测此线路'
-                                        className='ml-auto flex-shrink-0 p-1 text-gray-500 hover:text-green-500 transition-colors'
-                                        onClick={(event) => {
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          retrySource(source);
-                                        }}
-                                      >
-                                        <RefreshCw className='w-3.5 h-3.5' />
-                                      </button>
-                                    </div>
-                                  );
-                                }
-                              }
-                            })()}
-                          </div>
+                            }
+                          })()}
                         </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
                 <div className='flex-shrink-0 mt-auto pt-2 border-t border-gray-400 dark:border-gray-700'>
                   <button
                     onClick={() => {

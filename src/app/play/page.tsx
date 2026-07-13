@@ -4,7 +4,12 @@
 
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
-import { AlertTriangle, Heart, RefreshCw, Search as SearchIcon } from 'lucide-react';
+import {
+  AlertTriangle,
+  Heart,
+  RefreshCw,
+  Search as SearchIcon,
+} from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
@@ -18,6 +23,7 @@ import {
   savePlayRecord,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { reportPlaybackHealth } from '@/lib/source-health.client';
 import { SearchResult } from '@/lib/types';
 import {
   createHlsFailureResult,
@@ -25,7 +31,6 @@ import {
   processImageUrl,
 } from '@/lib/utils';
 import {
-  compareVideoSourceResults,
   createFailedVideoResult,
   findNextPlaybackSource,
   isTrailerTitle,
@@ -34,7 +39,9 @@ import {
 
 import EpisodeSelector from '@/components/EpisodeSelector';
 import PageLayout from '@/components/PageLayout';
-import SkipController, { SkipSettingsButton } from '@/components/SkipController';
+import SkipController, {
+  SkipSettingsButton,
+} from '@/components/SkipController';
 
 // 扩展 HTMLVideoElement 类型以支持 hls 属性
 declare global {
@@ -223,64 +230,116 @@ function PlayPageClient() {
   const preferBestSource = async (
     sources: SearchResult[]
   ): Promise<SearchResult | null> => {
-    const results: Array<{
-      source: SearchResult;
-      testResult: VideoSourceTestResult;
-    }> = new Array(sources.length);
-    let nextIndex = 0;
+    let healthScores: Record<string, { overallScore: number }> = {};
+    try {
+      const healthController = new AbortController();
+      const healthTimeout = setTimeout(() => healthController.abort(), 1500);
+      const healthResponse = await fetch('/api/source-health', {
+        signal: healthController.signal,
+      });
+      clearTimeout(healthTimeout);
+      if (healthResponse.ok) {
+        healthScores = (await healthResponse.json()).scores || {};
+      }
+    } catch {
+      healthScores = {};
+    }
 
-    const workers = Array.from(
-      { length: Math.min(4, sources.length) },
-      async () => {
-        while (nextIndex < sources.length) {
-          const index = nextIndex++;
-          const source = sources[index];
-          const episodeIndex = Math.min(
-            currentEpisodeIndexRef.current,
-            Math.max(source.episodes.length - 1, 0)
+    const orderedSources = sources
+      .map((source, index) => ({ source, index }))
+      .sort((a, b) => {
+        const tierDifference =
+          (a.source.source_tier === 'discovery' ? 1 : 0) -
+          (b.source.source_tier === 'discovery' ? 1 : 0);
+        if (tierDifference !== 0) return tierDifference;
+        const healthDifference =
+          (healthScores[b.source.source]?.overallScore || 50) -
+          (healthScores[a.source.source]?.overallScore || 50);
+        return healthDifference || a.index - b.index;
+      })
+      .map(({ source }) => source);
+
+    const primarySources = orderedSources.filter(
+      (source) => source.source_tier !== 'discovery'
+    );
+    const discoverySources = orderedSources.filter(
+      (source) => source.source_tier === 'discovery'
+    );
+    const newVideoInfoMap = new Map<string, VideoSourceTestResult>();
+
+    const probeSource = async (source: SearchResult) => {
+      const episodeIndex = Math.min(
+        currentEpisodeIndexRef.current,
+        Math.max(source.episodes.length - 1, 0)
+      );
+      let testResult: VideoSourceTestResult;
+
+      if (!source.episodes[episodeIndex]) {
+        testResult = createFailedVideoResult('manifest', '该来源没有播放地址');
+      } else {
+        try {
+          testResult = await getVideoResolutionFromM3u8(
+            source.episodes[episodeIndex],
+            { timeoutMs: 8000 }
           );
-          let testResult: VideoSourceTestResult;
-
-          if (!source.episodes[episodeIndex]) {
-            testResult = createFailedVideoResult(
-              'manifest',
-              '该来源没有播放地址'
-            );
-          } else {
-            try {
-              testResult = await getVideoResolutionFromM3u8(
-                source.episodes[episodeIndex],
-                { timeoutMs: 8000 }
-              );
-            } catch (probeError) {
-              testResult = createFailedVideoResult(
-                'network',
-                probeError instanceof Error
-                  ? probeError.message
-                  : '播放检测失败'
-              );
-            }
-          }
-          results[index] = { source, testResult };
+        } catch (probeError) {
+          testResult = createFailedVideoResult(
+            'network',
+            probeError instanceof Error ? probeError.message : '播放检测失败'
+          );
         }
       }
-    );
 
-    await Promise.allSettled(workers);
-    const newVideoInfoMap = new Map<string, VideoSourceTestResult>();
-    results.forEach(({ source, testResult }) => {
+      reportPlaybackHealth(source.source, testResult);
       newVideoInfoMap.set(`${source.source}-${source.id}`, testResult);
-    });
-    precomputedVideoInfoRef.current = newVideoInfoMap;
-    setPrecomputedVideoInfo(newVideoInfoMap);
+      const snapshot = new Map(newVideoInfoMap);
+      precomputedVideoInfoRef.current = snapshot;
+      setPrecomputedVideoInfo(snapshot);
+      return { source, testResult };
+    };
 
-    const successfulResults = results
-      .filter(({ testResult }) => testResult.playable && !testResult.hasError)
-      .sort((a, b) =>
-        compareVideoSourceResults(a.testResult, b.testResult)
+    const runPhase = async (
+      phaseSources: SearchResult[],
+      onPlayable: (source: SearchResult) => void
+    ) => {
+      let nextIndex = 0;
+      const workers = Array.from(
+        { length: Math.min(3, phaseSources.length) },
+        async () => {
+          while (nextIndex < phaseSources.length) {
+            const source = phaseSources[nextIndex++];
+            const result = await probeSource(source);
+            if (result.testResult.playable && !result.testResult.hasError) {
+              onPlayable(source);
+            }
+          }
+        }
       );
+      await Promise.allSettled(workers);
+    };
 
-    return successfulResults[0]?.source || null;
+    return new Promise<SearchResult | null>((resolve) => {
+      let selected = false;
+      const select = (source: SearchResult) => {
+        if (selected) return;
+        selected = true;
+        resolve(source);
+      };
+
+      void (async () => {
+        const topPrimary = primarySources.slice(0, 3);
+        const remainingPrimary = primarySources.slice(3);
+        await runPhase(topPrimary, select);
+
+        if (selected) {
+          void runPhase(remainingPrimary, () => undefined);
+          return;
+        }
+
+        await runPhase([...discoverySources, ...remainingPrimary], select);
+        if (!selected) resolve(null);
+      })();
+    });
   };
 
   // 更新视频地址
@@ -423,7 +482,7 @@ function PlayPageClient() {
         if (data.adult_results && Array.isArray(data.adult_results)) {
           allResults = allResults.concat(data.adult_results);
         }
-        
+
         // 兼容旧格式（如果有的话）
         if (data.results && Array.isArray(data.results)) {
           allResults = data.results;
@@ -677,13 +736,14 @@ function PlayPageClient() {
     }
   };
 
-  const handleFinalPlaybackFailure = async (
-    failure: VideoSourceTestResult
-  ) => {
+  const handleFinalPlaybackFailure = async (failure: VideoSourceTestResult) => {
     if (failoverInProgressRef.current) return;
     failoverInProgressRef.current = true;
 
     const failedKey = `${currentSourceRef.current}-${currentIdRef.current}`;
+    if (currentSourceRef.current) {
+      reportPlaybackHealth(currentSourceRef.current, failure);
+    }
     failedPlaybackSourcesRef.current.add(failedKey);
     const nextResults = new Map(precomputedVideoInfoRef.current);
     nextResults.set(failedKey, failure);
@@ -1145,11 +1205,15 @@ function PlayPageClient() {
             const hls = new Hls({
               debug: false, // 关闭日志
               enableWorker: true, // WebWorker 解码，降低主线程压力
-              lowLatencyMode: true, // 开启低延迟 LL-HLS
+              lowLatencyMode: false,
+              capLevelToPlayerSize: true,
+              startLevel: -1,
+              abrEwmaDefaultEstimate: 2500000,
 
               /* 缓冲/内存相关 */
-              maxBufferLength: 30, // 前向缓冲最大 30s，过大容易导致高延迟
-              backBufferLength: 30, // 仅保留 30s 已播放内容，避免内存占用
+              maxBufferLength: 45,
+              maxMaxBufferLength: 90,
+              backBufferLength: 30,
               maxBufferSize: 60 * 1000 * 1000, // 约 60MB，超出后触发清理
 
               /* 自定义loader */
@@ -1267,7 +1331,7 @@ function PlayPageClient() {
       artPlayerRef.current.on('video:timeupdate', () => {
         const currentTime = artPlayerRef.current.currentTime || 0;
         setCurrentPlayTime(currentTime);
-        
+
         // 同时更新时长（防止ready事件中获取不到）
         const duration = artPlayerRef.current.duration || 0;
         if (duration > 0 && videoDuration !== duration) {
@@ -1547,7 +1611,7 @@ function PlayPageClient() {
               </span>
             )}
           </h1>
-          
+
           {/* 跳过设置按钮 */}
           {currentSource && currentId && (
             <SkipSettingsButton onClick={() => setIsSkipSettingMode(true)} />
@@ -1657,19 +1721,22 @@ function PlayPageClient() {
                 )}
 
                 {/* 跳过片头片尾控制器 */}
-                {!playbackUnavailable && currentSource && currentId && videoTitle && (
-                  <SkipController
-                    source={currentSource}
-                    id={currentId}
-                    title={videoTitle}
-                    artPlayerRef={artPlayerRef}
-                    currentTime={currentPlayTime}
-                    duration={videoDuration}
-                    isSettingMode={isSkipSettingMode}
-                    onSettingModeChange={setIsSkipSettingMode}
-                    onNextEpisode={handleNextEpisode}
-                  />
-                )}
+                {!playbackUnavailable &&
+                  currentSource &&
+                  currentId &&
+                  videoTitle && (
+                    <SkipController
+                      source={currentSource}
+                      id={currentId}
+                      title={videoTitle}
+                      artPlayerRef={artPlayerRef}
+                      currentTime={currentPlayTime}
+                      duration={videoDuration}
+                      isSettingMode={isSkipSettingMode}
+                      onSettingModeChange={setIsSkipSettingMode}
+                      onNextEpisode={handleNextEpisode}
+                    />
+                  )}
 
                 {/* 换源加载蒙层 */}
                 {isVideoLoading && !playbackUnavailable && (

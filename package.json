@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit --incremental false",
     "test:watch": "jest --watch",
     "test": "jest",
+    "audit:sources": "node scripts/audit-sources.mjs",
     "format": "prettier -w .",
     "format:check": "prettier -c .",
     "gen:runtime": "node scripts/convert-config.js",
