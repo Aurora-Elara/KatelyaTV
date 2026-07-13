@@ -1,6 +1,21 @@
 {
   "cache_time": 7200,
   "api_site": {
+    "gszy": {
+      "api": "https://api.guangsuapi.com/api.php/provide/vod",
+      "name": "光速资源",
+      "is_adult": false
+    },
+    "sb": {
+      "api": "https://subocj.com/api.php/provide/vod",
+      "name": "速播资源",
+      "is_adult": false
+    },
+    "hn": {
+      "api": "https://www.hongniuzy2.com/api.php/provide/vod",
+      "name": "红牛资源",
+      "is_adult": false
+    },
     "maoyan": {
       "api": "https://api.maoyanapi.top/api.php/provide/vod",
       "name": "猫眼资源",
@@ -14,6 +29,11 @@
     "zy360": {
       "api": "https://360zy.com/api.php/provide/vod",
       "name": "360资源",
+      "is_adult": false
+    },
+    "ruyi": {
+      "api": "https://cj.rycjapi.com/api.php/provide/vod",
+      "name": "如意资源",
       "is_adult": false
     },
     "uk": {
@@ -31,11 +51,6 @@
       "name": "最大资源",
       "is_adult": false
     },
-    "sb": {
-      "api": "https://subocj.com/api.php/provide/vod",
-      "name": "速播资源",
-      "is_adult": false
-    },
     "lzi": {
       "api": "https://cj.lziapi.com/api.php/provide/vod",
       "name": "量子资源站",
@@ -49,11 +64,6 @@
     "bfzy": {
       "api": "https://bfzyapi.com/api.php/provide/vod",
       "name": "暴风资源",
-      "is_adult": false
-    },
-    "hn": {
-      "api": "https://www.hongniuzy2.com/api.php/provide/vod",
-      "name": "红牛资源",
       "is_adult": false
     },
     "huyazy": {

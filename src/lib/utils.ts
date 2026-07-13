@@ -2,6 +2,12 @@
 
 import Hls from 'hls.js';
 
+import {
+  createFailedVideoResult,
+  VideoSourceFailureKind,
+  VideoSourceTestResult,
+} from './video-source';
+
 /**
  * 获取图片代理 URL 设置
  */
@@ -89,159 +95,259 @@ export function cleanHtmlTags(text: string): string {
     .trim(); // 去掉首尾空格
 }
 
+export interface VideoProbeOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+function qualityFromWidth(width: number): string {
+  if (width >= 3840) return '4K';
+  if (width >= 2560) return '2K';
+  if (width >= 1920) return '1080p';
+  if (width >= 1280) return '720p';
+  if (width >= 854) return '480p';
+  return width > 0 ? 'SD' : '未知';
+}
+
+function formatLoadSpeed(speedKBps: number): string {
+  return speedKBps >= 1024
+    ? `${(speedKBps / 1024).toFixed(1)} MB/s`
+    : `${speedKBps.toFixed(1)} KB/s`;
+}
+
+function getHlsHttpStatus(data: any): number | undefined {
+  const value = Number(
+    data?.response?.code ||
+      data?.response?.status ||
+      data?.networkDetails?.status ||
+      0
+  );
+  return value > 0 ? value : undefined;
+}
+
+export function createHlsFailureResult(
+  data: any,
+  startupTimeMs: number,
+  pingTime = 0
+): VideoSourceTestResult {
+  const httpStatus = getHlsHttpStatus(data);
+  const details = String(data?.details || '').toLowerCase();
+  let failureKind: VideoSourceFailureKind = 'network';
+  let message = '跨域或网络连接失败';
+
+  if (httpStatus === 404 || httpStatus === 410) {
+    failureKind = 'not_found';
+    message = `播放资源不存在 (HTTP ${httpStatus})`;
+  } else if (httpStatus) {
+    failureKind = 'http';
+    message =
+      httpStatus === 401 || httpStatus === 403
+        ? `来源拒绝访问 (HTTP ${httpStatus})`
+        : httpStatus === 429
+        ? '来源请求过于频繁 (HTTP 429)'
+        : `来源返回 HTTP ${httpStatus}`;
+  } else if (data?.type === Hls.ErrorTypes.MEDIA_ERROR) {
+    failureKind = 'media';
+    message = '浏览器无法解码该视频';
+  } else if (details.includes('manifest') || details.includes('level')) {
+    failureKind = 'manifest';
+    message = '播放清单无效';
+  } else if (details.includes('frag')) {
+    failureKind = 'fragment';
+    message = '媒体分片加载失败';
+  }
+
+  return createFailedVideoResult(failureKind, message, {
+    httpStatus,
+    pingTime: Math.round(pingTime),
+    startupTimeMs: Math.round(startupTimeMs),
+  });
+}
+
 /**
- * 从m3u8地址获取视频质量等级和网络信息
- * @param m3u8Url m3u8播放列表的URL
- * @returns Promise<{quality: string, loadSpeed: string, pingTime: number}> 视频质量等级和网络信息
+ * 使用浏览器实际 HLS 栈检测播放清单、首个分片和启动速度。
  */
-export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
-  quality: string; // 如720p、1080p等
-  loadSpeed: string; // 自动转换为KB/s或MB/s
-  pingTime: number; // 网络延迟（毫秒）
-}> {
-  try {
-    // 直接使用m3u8 URL作为视频源，避免CORS问题
-    return new Promise((resolve, reject) => {
-      const video = document.createElement('video');
-      video.muted = true;
-      video.preload = 'metadata';
-
-      // 测量网络延迟（ping时间） - 使用m3u8 URL而不是ts文件
-      const pingStart = performance.now();
-      let pingTime = 0;
-
-      // 测量ping时间（使用m3u8 URL）
-      fetch(m3u8Url, { method: 'HEAD', mode: 'no-cors' })
-        .then(() => {
-          pingTime = performance.now() - pingStart;
-        })
-        .catch(() => {
-          pingTime = performance.now() - pingStart; // 记录到失败为止的时间
-        });
-
-      // 固定使用hls.js加载
-      const hls = new Hls();
-
-      // 设置超时处理
-      const timeout = setTimeout(() => {
-        hls.destroy();
-        video.remove();
-        reject(new Error('Timeout loading video metadata'));
-      }, 4000);
-
-      video.onerror = () => {
-        clearTimeout(timeout);
-        hls.destroy();
-        video.remove();
-        reject(new Error('Failed to load video metadata'));
-      };
-
-      let actualLoadSpeed = '未知';
-      let hasSpeedCalculated = false;
-      let hasMetadataLoaded = false;
-
-      let fragmentStartTime = 0;
-
-      // 检查是否可以返回结果
-      const checkAndResolve = () => {
-        if (
-          hasMetadataLoaded &&
-          (hasSpeedCalculated || actualLoadSpeed !== '未知')
-        ) {
-          clearTimeout(timeout);
-          const width = video.videoWidth;
-          if (width && width > 0) {
-            hls.destroy();
-            video.remove();
-
-            // 根据视频宽度判断视频质量等级，使用经典分辨率的宽度作为分割点
-            const quality =
-              width >= 3840
-                ? '4K' // 4K: 3840x2160
-                : width >= 2560
-                ? '2K' // 2K: 2560x1440
-                : width >= 1920
-                ? '1080p' // 1080p: 1920x1080
-                : width >= 1280
-                ? '720p' // 720p: 1280x720
-                : width >= 854
-                ? '480p'
-                : 'SD'; // 480p: 854x480
-
-            resolve({
-              quality,
-              loadSpeed: actualLoadSpeed,
-              pingTime: Math.round(pingTime),
-            });
-          } else {
-            // webkit 无法获取尺寸，直接返回
-            resolve({
-              quality: '未知',
-              loadSpeed: actualLoadSpeed,
-              pingTime: Math.round(pingTime),
-            });
-          }
-        }
-      };
-
-      // 监听片段加载开始
-      hls.on(Hls.Events.FRAG_LOADING, () => {
-        fragmentStartTime = performance.now();
-      });
-
-      // 监听片段加载完成，只需首个分片即可计算速度
-      hls.on(Hls.Events.FRAG_LOADED, (event: any, data: any) => {
-        if (
-          fragmentStartTime > 0 &&
-          data &&
-          data.payload &&
-          !hasSpeedCalculated
-        ) {
-          const loadTime = performance.now() - fragmentStartTime;
-          const size = data.payload.byteLength || 0;
-
-          if (loadTime > 0 && size > 0) {
-            const speedKBps = size / 1024 / (loadTime / 1000);
-
-            // 立即计算速度，无需等待更多分片
-            const avgSpeedKBps = speedKBps;
-
-            if (avgSpeedKBps >= 1024) {
-              actualLoadSpeed = `${(avgSpeedKBps / 1024).toFixed(1)} MB/s`;
-            } else {
-              actualLoadSpeed = `${avgSpeedKBps.toFixed(1)} KB/s`;
-            }
-            hasSpeedCalculated = true;
-            checkAndResolve(); // 尝试返回结果
-          }
-        }
-      });
-
-      hls.loadSource(m3u8Url);
-      hls.attachMedia(video);
-
-      // 监听hls.js错误
-      hls.on(Hls.Events.ERROR, (event: any, data: any) => {
-        console.error('HLS错误:', data);
-        if (data.fatal) {
-          clearTimeout(timeout);
-          hls.destroy();
-          video.remove();
-          reject(new Error(`HLS播放失败: ${data.type}`));
-        }
-      });
-
-      // 监听视频元数据加载完成
-      video.onloadedmetadata = () => {
-        hasMetadataLoaded = true;
-        checkAndResolve(); // 尝试返回结果
-      };
-    });
-  } catch (error) {
-    throw new Error(
-      `Error getting video resolution: ${
-        error instanceof Error ? error.message : String(error)
-      }`
+export function getVideoResolutionFromM3u8(
+  m3u8Url: string,
+  options: VideoProbeOptions = {}
+): Promise<VideoSourceTestResult> {
+  const timeoutMs = options.timeoutMs || 8000;
+  if (!m3u8Url) {
+    return Promise.resolve(
+      createFailedVideoResult('manifest', '播放地址为空')
     );
   }
+  if (options.signal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
+  if (!Hls.isSupported()) {
+    return Promise.resolve(
+      createFailedVideoResult('media', '当前浏览器不支持 HLS 播放')
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const video = document.createElement('video');
+    const controller = new AbortController();
+    let settled = false;
+    let pingTime = 0;
+    let fragmentStartedAt = 0;
+    let manifestLoaded = false;
+    let metadataLoaded = false;
+    let fragmentLoaded = false;
+    let speedKBps = 0;
+    let networkRecoveryCount = 0;
+    let mediaRecoveryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    video.muted = true;
+    video.preload = 'metadata';
+    video.crossOrigin = 'anonymous';
+
+    const hls = new Hls({
+      enableWorker: true,
+      maxBufferLength: 2,
+      manifestLoadingTimeOut: timeoutMs,
+      levelLoadingTimeOut: timeoutMs,
+      fragLoadingTimeOut: timeoutMs,
+      manifestLoadingMaxRetry: 0,
+      levelLoadingMaxRetry: 0,
+      fragLoadingMaxRetry: 0,
+    });
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (retryTimer) clearTimeout(retryTimer);
+      controller.abort();
+      options.signal?.removeEventListener('abort', handleAbort);
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      hls.destroy();
+      video.remove();
+    };
+
+    const finish = (result: VideoSourceTestResult) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const handleAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+
+    const getDetectedWidth = () => {
+      const levelWidth = hls.levels.reduce(
+        (max, level) => Math.max(max, level.width || 0),
+        0
+      );
+      return video.videoWidth || levelWidth;
+    };
+
+    const maybeFinish = () => {
+      if (!manifestLoaded || (!metadataLoaded && !fragmentLoaded)) return;
+      const startupTimeMs = performance.now() - startedAt;
+      const measuredSpeed = Number.isFinite(speedKBps) ? speedKBps : 0;
+      finish({
+        status: fragmentLoaded ? 'ok' : 'partial',
+        quality: qualityFromWidth(getDetectedWidth()),
+        speedKBps: measuredSpeed,
+        loadSpeed: measuredSpeed > 0 ? formatLoadSpeed(measuredSpeed) : '未知',
+        pingTime: Math.round(pingTime),
+        startupTimeMs: Math.round(startupTimeMs),
+        playable: true,
+        message: fragmentLoaded ? '播放正常' : '播放清单可用',
+        hasError: false,
+      });
+    };
+
+    const timeout = setTimeout(() => {
+      finish(
+        createFailedVideoResult('timeout', '播放检测超时', {
+          pingTime: Math.round(pingTime),
+          startupTimeMs: Math.round(performance.now() - startedAt),
+        })
+      );
+    }, timeoutMs);
+
+    options.signal?.addEventListener('abort', handleAbort, { once: true });
+
+    const pingStartedAt = performance.now();
+    fetch(m3u8Url, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      signal: controller.signal,
+    })
+      .catch(() => undefined)
+      .finally(() => {
+        pingTime = performance.now() - pingStartedAt;
+      });
+
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(m3u8Url));
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      manifestLoaded = true;
+      maybeFinish();
+    });
+    hls.on(Hls.Events.FRAG_LOADING, () => {
+      if (!fragmentStartedAt) fragmentStartedAt = performance.now();
+    });
+    hls.on(Hls.Events.FRAG_LOADED, (_event, data: any) => {
+      fragmentLoaded = true;
+      const loadTimeMs = performance.now() - fragmentStartedAt;
+      const size = Number(data?.payload?.byteLength || 0);
+      if (fragmentStartedAt > 0 && loadTimeMs > 0 && size > 0) {
+        speedKBps = size / 1024 / (loadTimeMs / 1000);
+      }
+      maybeFinish();
+    });
+    hls.on(Hls.Events.ERROR, (_event, data: any) => {
+      if (!data?.fatal) return;
+      const httpStatus = getHlsHttpStatus(data);
+      const retryableNetworkError =
+        data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+        (!httpStatus || httpStatus >= 500);
+
+      if (retryableNetworkError && networkRecoveryCount < 1) {
+        networkRecoveryCount += 1;
+        retryTimer = setTimeout(() => hls.startLoad(), 500);
+        return;
+      }
+      if (
+        data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+        mediaRecoveryCount < 1
+      ) {
+        mediaRecoveryCount += 1;
+        hls.recoverMediaError();
+        return;
+      }
+
+      finish(
+        createHlsFailureResult(
+          data,
+          performance.now() - startedAt,
+          pingTime
+        )
+      );
+    });
+
+    video.onloadedmetadata = () => {
+      metadataLoaded = true;
+      maybeFinish();
+    };
+    video.onerror = () => {
+      finish(
+        createFailedVideoResult('media', '浏览器无法读取视频元数据', {
+          pingTime: Math.round(pingTime),
+          startupTimeMs: Math.round(performance.now() - startedAt),
+        })
+      );
+    };
+
+    hls.attachMedia(video);
+  });
 }

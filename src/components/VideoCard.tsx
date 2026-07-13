@@ -14,6 +14,7 @@ import {
 } from '@/lib/db.client';
 import { SearchResult } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
+import { isTrailerTitle } from '@/lib/video-source';
 
 import { ImagePlaceholder } from '@/components/ImagePlaceholder';
 
@@ -110,6 +111,7 @@ export default function VideoCard({
       ? 'movie'
       : 'tv'
     : type;
+  const isTrailer = isTrailerTitle(actualTitle);
 
   // 获取收藏状态
   useEffect(() => {
@@ -324,6 +326,12 @@ export default function VideoCard({
         )}
 
         {/* 徽章 */}
+        {isTrailer && (
+          <div className='absolute top-2 left-2 bg-amber-500 text-white text-xs font-semibold px-2 py-1 rounded-md shadow-md'>
+            预告
+          </div>
+        )}
+
         {config.showRating && rate && (
           <div className='absolute top-2 right-2 bg-pink-500 text-white text-xs font-bold w-7 h-7 rounded-full flex items-center justify-center shadow-md transition-all duration-300 ease-out group-hover:scale-110'>
             {rate}
@@ -345,7 +353,9 @@ export default function VideoCard({
             target='_blank'
             rel='noopener noreferrer'
             onClick={(e) => e.stopPropagation()}
-            className='absolute top-2 left-2 opacity-0 -translate-x-2 transition-all duration-300 ease-in-out delay-100 group-hover:opacity-100 group-hover:translate-x-0'
+            className={`absolute ${
+              isTrailer ? 'top-10' : 'top-2'
+            } left-2 opacity-0 -translate-x-2 transition-all duration-300 ease-in-out delay-100 group-hover:opacity-100 group-hover:translate-x-0`}
           >
             <div className='bg-green-500 text-white text-xs font-bold w-7 h-7 rounded-full flex items-center justify-center shadow-md hover:bg-green-600 hover:scale-[1.1] transition-all duration-300 ease-out'>
               <Link size={16} />

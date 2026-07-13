@@ -4,7 +4,7 @@
 
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
-import { Heart } from 'lucide-react';
+import { AlertTriangle, Heart, RefreshCw, Search as SearchIcon } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
@@ -19,7 +19,18 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { SearchResult } from '@/lib/types';
-import { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';
+import {
+  createHlsFailureResult,
+  getVideoResolutionFromM3u8,
+  processImageUrl,
+} from '@/lib/utils';
+import {
+  compareVideoSourceResults,
+  createFailedVideoResult,
+  findNextPlaybackSource,
+  isTrailerTitle,
+  VideoSourceTestResult,
+} from '@/lib/video-source';
 
 import EpisodeSelector from '@/components/EpisodeSelector';
 import PageLayout from '@/components/PageLayout';
@@ -94,6 +105,7 @@ function PlayPageClient() {
   const videoYearRef = useRef(videoYear);
   const detailRef = useRef<SearchResult | null>(detail);
   const currentEpisodeIndexRef = useRef(currentEpisodeIndex);
+  const previousEpisodeIndexRef = useRef(currentEpisodeIndex);
 
   // 同步最新值到 refs
   useEffect(() => {
@@ -147,8 +159,37 @@ function PlayPageClient() {
 
   // 保存优选时的测速结果，避免EpisodeSelector重复测速
   const [precomputedVideoInfo, setPrecomputedVideoInfo] = useState<
-    Map<string, { quality: string; loadSpeed: string; pingTime: number }>
+    Map<string, VideoSourceTestResult>
   >(new Map());
+  const availableSourcesRef = useRef<SearchResult[]>([]);
+  const precomputedVideoInfoRef = useRef<Map<string, VideoSourceTestResult>>(
+    new Map()
+  );
+  const failedPlaybackSourcesRef = useRef<Set<string>>(new Set());
+  const failoverInProgressRef = useRef(false);
+  const [playbackUnavailable, setPlaybackUnavailable] = useState<{
+    message: string;
+    testedCount: number;
+    isTrailer: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    availableSourcesRef.current = availableSources;
+  }, [availableSources]);
+
+  useEffect(() => {
+    precomputedVideoInfoRef.current = precomputedVideoInfo;
+  }, [precomputedVideoInfo]);
+
+  useEffect(() => {
+    if (previousEpisodeIndexRef.current === currentEpisodeIndex) return;
+
+    previousEpisodeIndexRef.current = currentEpisodeIndex;
+    failedPlaybackSourcesRef.current.clear();
+    precomputedVideoInfoRef.current = new Map();
+    setPrecomputedVideoInfo(new Map());
+    setPlaybackUnavailable(null);
+  }, [currentEpisodeIndex]);
 
   // 折叠状态（仅在 lg 及以上屏幕有效）
   const [isEpisodeSelectorCollapsed, setIsEpisodeSelectorCollapsed] =
@@ -181,200 +222,65 @@ function PlayPageClient() {
   // 播放源优选函数
   const preferBestSource = async (
     sources: SearchResult[]
-  ): Promise<SearchResult> => {
-    if (sources.length === 1) return sources[0];
-
-    // 将播放源均分为两批，并发测速各批，避免一次性过多请求
-    const batchSize = Math.ceil(sources.length / 2);
-    const allResults: Array<{
+  ): Promise<SearchResult | null> => {
+    const results: Array<{
       source: SearchResult;
-      testResult: { quality: string; loadSpeed: string; pingTime: number };
-    } | null> = [];
+      testResult: VideoSourceTestResult;
+    }> = new Array(sources.length);
+    let nextIndex = 0;
 
-    for (let start = 0; start < sources.length; start += batchSize) {
-      const batchSources = sources.slice(start, start + batchSize);
-      const batchResults = await Promise.all(
-        batchSources.map(async (source) => {
-          try {
-            // 检查是否有第一集的播放地址
-            if (!source.episodes || source.episodes.length === 0) {
-              console.warn(`播放源 ${source.source_name} 没有可用的播放地址`);
-              return null;
+    const workers = Array.from(
+      { length: Math.min(4, sources.length) },
+      async () => {
+        while (nextIndex < sources.length) {
+          const index = nextIndex++;
+          const source = sources[index];
+          const episodeIndex = Math.min(
+            currentEpisodeIndexRef.current,
+            Math.max(source.episodes.length - 1, 0)
+          );
+          let testResult: VideoSourceTestResult;
+
+          if (!source.episodes[episodeIndex]) {
+            testResult = createFailedVideoResult(
+              'manifest',
+              '该来源没有播放地址'
+            );
+          } else {
+            try {
+              testResult = await getVideoResolutionFromM3u8(
+                source.episodes[episodeIndex],
+                { timeoutMs: 8000 }
+              );
+            } catch (probeError) {
+              testResult = createFailedVideoResult(
+                'network',
+                probeError instanceof Error
+                  ? probeError.message
+                  : '播放检测失败'
+              );
             }
-
-            const episodeUrl =
-              source.episodes.length > 1
-                ? source.episodes[1]
-                : source.episodes[0];
-            const testResult = await getVideoResolutionFromM3u8(episodeUrl);
-
-            return {
-              source,
-              testResult,
-            };
-          } catch (error) {
-            return null;
           }
-        })
-      );
-      allResults.push(...batchResults);
-    }
-
-    // 等待所有测速完成，包含成功和失败的结果
-    // 保存所有测速结果到 precomputedVideoInfo，供 EpisodeSelector 使用（包含错误结果）
-    const newVideoInfoMap = new Map<
-      string,
-      {
-        quality: string;
-        loadSpeed: string;
-        pingTime: number;
-        hasError?: boolean;
+          results[index] = { source, testResult };
+        }
       }
-    >();
-    allResults.forEach((result, index) => {
-      const source = sources[index];
-      const sourceKey = `${source.source}-${source.id}`;
+    );
 
-      if (result) {
-        // 成功的结果
-        newVideoInfoMap.set(sourceKey, result.testResult);
-      }
+    await Promise.allSettled(workers);
+    const newVideoInfoMap = new Map<string, VideoSourceTestResult>();
+    results.forEach(({ source, testResult }) => {
+      newVideoInfoMap.set(`${source.source}-${source.id}`, testResult);
     });
-
-    // 过滤出成功的结果用于优选计算
-    const successfulResults = allResults.filter(Boolean) as Array<{
-      source: SearchResult;
-      testResult: { quality: string; loadSpeed: string; pingTime: number };
-    }>;
-
+    precomputedVideoInfoRef.current = newVideoInfoMap;
     setPrecomputedVideoInfo(newVideoInfoMap);
 
-    if (successfulResults.length === 0) {
-      console.warn('所有播放源测速都失败，使用第一个播放源');
-      return sources[0];
-    }
-
-    // 找出所有有效速度的最大值，用于线性映射
-    const validSpeeds = successfulResults
-      .map((result) => {
-        const speedStr = result.testResult.loadSpeed;
-        if (speedStr === '未知' || speedStr === '测量中...') return 0;
-
-        const match = speedStr.match(/^([\d.]+)\s*(KB\/s|MB\/s)$/);
-        if (!match) return 0;
-
-        const value = parseFloat(match[1]);
-        const unit = match[2];
-        return unit === 'MB/s' ? value * 1024 : value; // 统一转换为 KB/s
-      })
-      .filter((speed) => speed > 0);
-
-    const maxSpeed = validSpeeds.length > 0 ? Math.max(...validSpeeds) : 1024; // 默认1MB/s作为基准
-
-    // 找出所有有效延迟的最小值和最大值，用于线性映射
-    const validPings = successfulResults
-      .map((result) => result.testResult.pingTime)
-      .filter((ping) => ping > 0);
-
-    const minPing = validPings.length > 0 ? Math.min(...validPings) : 50;
-    const maxPing = validPings.length > 0 ? Math.max(...validPings) : 1000;
-
-    // 计算每个结果的评分
-    const resultsWithScore = successfulResults.map((result) => ({
-      ...result,
-      score: calculateSourceScore(
-        result.testResult,
-        maxSpeed,
-        minPing,
-        maxPing
-      ),
-    }));
-
-    // 按综合评分排序，选择最佳播放源
-    resultsWithScore.sort((a, b) => b.score - a.score);
-
-    console.log('播放源评分排序结果:');
-    resultsWithScore.forEach((result, index) => {
-      console.log(
-        `${index + 1}. ${
-          result.source.source_name
-        } - 评分: ${result.score.toFixed(2)} (${result.testResult.quality}, ${
-          result.testResult.loadSpeed
-        }, ${result.testResult.pingTime}ms)`
+    const successfulResults = results
+      .filter(({ testResult }) => testResult.playable && !testResult.hasError)
+      .sort((a, b) =>
+        compareVideoSourceResults(a.testResult, b.testResult)
       );
-    });
 
-    return resultsWithScore[0].source;
-  };
-
-  // 计算播放源综合评分
-  const calculateSourceScore = (
-    testResult: {
-      quality: string;
-      loadSpeed: string;
-      pingTime: number;
-    },
-    maxSpeed: number,
-    minPing: number,
-    maxPing: number
-  ): number => {
-    let score = 0;
-
-    // 分辨率评分 (40% 权重)
-    const qualityScore = (() => {
-      switch (testResult.quality) {
-        case '4K':
-          return 100;
-        case '2K':
-          return 85;
-        case '1080p':
-          return 75;
-        case '720p':
-          return 60;
-        case '480p':
-          return 40;
-        case 'SD':
-          return 20;
-        default:
-          return 0;
-      }
-    })();
-    score += qualityScore * 0.4;
-
-    // 下载速度评分 (40% 权重) - 基于最大速度线性映射
-    const speedScore = (() => {
-      const speedStr = testResult.loadSpeed;
-      if (speedStr === '未知' || speedStr === '测量中...') return 30;
-
-      // 解析速度值
-      const match = speedStr.match(/^([\d.]+)\s*(KB\/s|MB\/s)$/);
-      if (!match) return 30;
-
-      const value = parseFloat(match[1]);
-      const unit = match[2];
-      const speedKBps = unit === 'MB/s' ? value * 1024 : value;
-
-      // 基于最大速度线性映射，最高100分
-      const speedRatio = speedKBps / maxSpeed;
-      return Math.min(100, Math.max(0, speedRatio * 100));
-    })();
-    score += speedScore * 0.4;
-
-    // 网络延迟评分 (20% 权重) - 基于延迟范围线性映射
-    const pingScore = (() => {
-      const ping = testResult.pingTime;
-      if (ping <= 0) return 0; // 无效延迟给默认分
-
-      // 如果所有延迟都相同，给满分
-      if (maxPing === minPing) return 100;
-
-      // 线性映射：最低延迟=100分，最高延迟=0分
-      const pingRatio = (maxPing - ping) / (maxPing - minPing);
-      return Math.min(100, Math.max(0, pingRatio * 100));
-    })();
-    score += pingScore * 0.2;
-
-    return Math.round(score * 100) / 100; // 保留两位小数
+    return successfulResults[0]?.source || null;
   };
 
   // 更新视频地址
@@ -468,8 +374,12 @@ function PlayPageClient() {
 
   // 当集数索引变化时自动更新视频地址
   useEffect(() => {
+    if (playbackUnavailable) {
+      setVideoUrl('');
+      return;
+    }
     updateVideoUrl(detail, currentEpisodeIndex);
-  }, [detail, currentEpisodeIndex]);
+  }, [detail, currentEpisodeIndex, playbackUnavailable]);
 
   // 进入页面时直接获取全部源信息
   useEffect(() => {
@@ -574,6 +484,7 @@ function PlayPageClient() {
       }
 
       let detailData: SearchResult = sourcesInfo[0];
+      let allSourcesUnavailable = false;
       // 指定源和id且无需优选
       if (currentSource && currentId && !needPreferRef.current) {
         const target = sourcesInfo.find(
@@ -588,15 +499,20 @@ function PlayPageClient() {
         }
       }
 
-      // 未指定源和 id 或需要优选，且开启优选开关
-      if (
-        (!currentSource || !currentId || needPreferRef.current) &&
-        optimizationEnabled
-      ) {
+      // 开启优选时始终验证当前条目的全部线路，避免直接进入失效源。
+      if (optimizationEnabled) {
         setLoadingStage('preferring');
         setLoadingMessage('⚡ 正在优选最佳播放源...');
 
-        detailData = await preferBestSource(sourcesInfo);
+        const preferredSource = await preferBestSource(sourcesInfo);
+        if (preferredSource) {
+          detailData = preferredSource;
+        } else {
+          allSourcesUnavailable = true;
+          failedPlaybackSourcesRef.current = new Set(
+            sourcesInfo.map((source) => `${source.source}-${source.id}`)
+          );
+        }
       }
 
       console.log(detailData.source, detailData.id);
@@ -608,6 +524,17 @@ function PlayPageClient() {
       setVideoTitle(detailData.title || videoTitleRef.current);
       setVideoCover(detailData.poster);
       setDetail(detailData);
+      setPlaybackUnavailable(
+        allSourcesUnavailable
+          ? {
+              message: isTrailerTitle(detailData.title)
+                ? '这是预告条目，当前匹配到的预告线路均已失效。'
+                : '已检测全部匹配线路，但暂时没有可播放资源。',
+              testedCount: sourcesInfo.length,
+              isTrailer: isTrailerTitle(detailData.title),
+            }
+          : null
+      );
       if (currentEpisodeIndex >= detailData.episodes.length) {
         setCurrentEpisodeIndex(0);
       }
@@ -623,6 +550,13 @@ function PlayPageClient() {
 
       setLoadingStage('ready');
       setLoadingMessage('✨ 准备就绪，即将开始播放...');
+
+      if (allSourcesUnavailable) {
+        setVideoUrl('');
+        setIsVideoLoading(false);
+        setLoading(false);
+        return;
+      }
 
       // 短暂延迟让用户看到完成状态
       setTimeout(() => {
@@ -669,9 +603,10 @@ function PlayPageClient() {
     newSource: string,
     newId: string,
     newTitle: string
-  ) => {
+  ): Promise<boolean> => {
     try {
       // 显示换源加载状态
+      setPlaybackUnavailable(null);
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
 
@@ -697,7 +632,8 @@ function PlayPageClient() {
       );
       if (!newDetail) {
         setError('未找到匹配结果');
-        return;
+        setIsVideoLoading(false);
+        return false;
       }
 
       // 尝试跳转到当前正在播放的集数
@@ -732,11 +668,85 @@ function PlayPageClient() {
       setCurrentId(newId);
       setDetail(newDetail);
       setCurrentEpisodeIndex(targetIndex);
+      return true;
     } catch (err) {
       // 隐藏换源加载状态
       setIsVideoLoading(false);
       setError(err instanceof Error ? err.message : '换源失败');
+      return false;
     }
+  };
+
+  const handleFinalPlaybackFailure = async (
+    failure: VideoSourceTestResult
+  ) => {
+    if (failoverInProgressRef.current) return;
+    failoverInProgressRef.current = true;
+
+    const failedKey = `${currentSourceRef.current}-${currentIdRef.current}`;
+    failedPlaybackSourcesRef.current.add(failedKey);
+    const nextResults = new Map(precomputedVideoInfoRef.current);
+    nextResults.set(failedKey, failure);
+    precomputedVideoInfoRef.current = nextResults;
+    setPrecomputedVideoInfo(nextResults);
+
+    let nextSource = findNextPlaybackSource(
+      availableSourcesRef.current,
+      nextResults,
+      failedPlaybackSourcesRef.current,
+      currentEpisodeIndexRef.current,
+      failedKey
+    );
+
+    while (nextSource) {
+      const nextKey = `${nextSource.source}-${nextSource.id}`;
+      const switched = await handleSourceChange(
+        nextSource.source,
+        nextSource.id,
+        nextSource.title
+      );
+      if (switched) {
+        failoverInProgressRef.current = false;
+        return;
+      }
+
+      failedPlaybackSourcesRef.current.add(nextKey);
+      nextResults.set(
+        nextKey,
+        createFailedVideoResult('network', '自动换源失败')
+      );
+      nextSource = findNextPlaybackSource(
+        availableSourcesRef.current,
+        nextResults,
+        failedPlaybackSourcesRef.current,
+        currentEpisodeIndexRef.current,
+        failedKey
+      );
+    }
+
+    artPlayerRef.current?.destroy?.();
+    artPlayerRef.current = null;
+    setVideoUrl('');
+    setIsVideoLoading(false);
+    setPlaybackUnavailable({
+      message: isTrailerTitle(videoTitleRef.current)
+        ? '这是预告条目，当前匹配到的预告线路均已失效。'
+        : failure.message || '当前条目暂无可播放线路。',
+      testedCount: Math.max(
+        failedPlaybackSourcesRef.current.size,
+        availableSourcesRef.current.length
+      ),
+      isTrailer: isTrailerTitle(videoTitleRef.current),
+    });
+    failoverInProgressRef.current = false;
+  };
+
+  const retryAllSources = () => {
+    failedPlaybackSourcesRef.current.clear();
+    precomputedVideoInfoRef.current = new Map();
+    setPrecomputedVideoInfo(new Map());
+    setPlaybackUnavailable(null);
+    window.location.reload();
   };
 
   useEffect(() => {
@@ -1151,27 +1161,47 @@ function PlayPageClient() {
             hls.loadSource(url);
             hls.attachMedia(video);
             video.hls = hls;
+            const playbackStartedAt = performance.now();
+            let networkRecoveryCount = 0;
+            let mediaRecoveryCount = 0;
+            let finalFailureHandled = false;
+            let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
 
             ensureVideoSource(video, url);
 
             hls.on(Hls.Events.ERROR, function (event: any, data: any) {
               console.error('HLS Error:', event, data);
-              if (data.fatal) {
-                switch (data.type) {
-                  case Hls.ErrorTypes.NETWORK_ERROR:
-                    console.log('网络错误，尝试恢复...');
-                    hls.startLoad();
-                    break;
-                  case Hls.ErrorTypes.MEDIA_ERROR:
-                    console.log('媒体错误，尝试恢复...');
-                    hls.recoverMediaError();
-                    break;
-                  default:
-                    console.log('无法恢复的错误');
-                    hls.destroy();
-                    break;
-                }
+              if (!data.fatal || finalFailureHandled) return;
+
+              const failure = createHlsFailureResult(
+                data,
+                performance.now() - playbackStartedAt
+              );
+              const retryableNetworkError =
+                data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+                (!failure.httpStatus || failure.httpStatus >= 500);
+
+              if (retryableNetworkError && networkRecoveryCount < 1) {
+                networkRecoveryCount += 1;
+                recoveryTimer = setTimeout(() => hls.startLoad(), 500);
+                return;
               }
+              if (
+                data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+                mediaRecoveryCount < 1
+              ) {
+                mediaRecoveryCount += 1;
+                hls.recoverMediaError();
+                return;
+              }
+
+              finalFailureHandled = true;
+              if (recoveryTimer) clearTimeout(recoveryTimer);
+              hls.destroy();
+              void handleFinalPlaybackFailure(failure);
+            });
+            hls.on(Hls.Events.DESTROYING, () => {
+              if (recoveryTimer) clearTimeout(recoveryTimer);
             });
           },
         },
@@ -1331,6 +1361,11 @@ function PlayPageClient() {
       if (saveIntervalRef.current) {
         clearInterval(saveIntervalRef.current);
       }
+      if (artPlayerRef.current?.video?.hls) {
+        artPlayerRef.current.video.hls.destroy();
+      }
+      artPlayerRef.current?.destroy?.();
+      artPlayerRef.current = null;
     };
   }, []);
 
@@ -1501,6 +1536,11 @@ function PlayPageClient() {
         <div className='py-1 flex items-center justify-between'>
           <h1 className='text-xl font-semibold text-gray-900 dark:text-gray-100'>
             {videoTitle || '影片标题'}
+            {isTrailerTitle(videoTitle) && (
+              <span className='ml-2 align-middle text-xs font-medium px-2 py-1 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400'>
+                预告
+              </span>
+            )}
             {totalEpisodes > 1 && (
               <span className='text-gray-500 dark:text-gray-400'>
                 {` > 第 ${currentEpisodeIndex + 1} 集`}
@@ -1575,8 +1615,49 @@ function PlayPageClient() {
                   className='bg-black w-full h-full rounded-xl overflow-hidden shadow-lg'
                 ></div>
 
+                {playbackUnavailable && (
+                  <div className='absolute inset-0 z-[600] rounded-xl bg-black/90 flex items-center justify-center px-6'>
+                    <div className='w-full max-w-lg text-center'>
+                      <AlertTriangle className='mx-auto mb-5 h-14 w-14 text-amber-400' />
+                      <h2 className='text-xl font-semibold text-white'>
+                        当前条目暂无可播放线路
+                      </h2>
+                      <p className='mt-3 text-sm leading-6 text-gray-300'>
+                        {playbackUnavailable.message}
+                      </p>
+                      <p className='mt-1 text-xs text-gray-500'>
+                        已检测 {playbackUnavailable.testedCount} 条匹配线路
+                      </p>
+                      <div className='mt-6 flex flex-col sm:flex-row justify-center gap-3'>
+                        <button
+                          type='button'
+                          onClick={retryAllSources}
+                          className='inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-md font-medium transition-colors'
+                        >
+                          <RefreshCw className='h-4 w-4' />
+                          重新检测
+                        </button>
+                        <button
+                          type='button'
+                          onClick={() =>
+                            router.push(
+                              `/search?q=${encodeURIComponent(
+                                searchTitle || videoTitle
+                              )}`
+                            )
+                          }
+                          className='inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-md font-medium transition-colors'
+                        >
+                          <SearchIcon className='h-4 w-4' />
+                          返回搜索
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* 跳过片头片尾控制器 */}
-                {currentSource && currentId && videoTitle && (
+                {!playbackUnavailable && currentSource && currentId && videoTitle && (
                   <SkipController
                     source={currentSource}
                     id={currentId}
@@ -1591,7 +1672,7 @@ function PlayPageClient() {
                 )}
 
                 {/* 换源加载蒙层 */}
-                {isVideoLoading && (
+                {isVideoLoading && !playbackUnavailable && (
                   <div className='absolute inset-0 bg-black/85 backdrop-blur-sm rounded-xl flex items-center justify-center z-[500] transition-all duration-300'>
                     <div className='text-center max-w-md mx-auto px-6'>
                       {/* 动画影院图标 */}

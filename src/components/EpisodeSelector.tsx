@@ -2,6 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
+import { RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import React, {
   useCallback,
@@ -12,14 +13,11 @@ import React, {
 
 import { SearchResult } from '@/lib/types';
 import { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';
-
-// 定义视频信息类型
-interface VideoInfo {
-  quality: string;
-  loadSpeed: string;
-  pingTime: number;
-  hasError?: boolean;
-}
+import {
+  isTrailerTitle,
+  sortSourcesByPlaybackResult,
+  VideoSourceTestResult,
+} from '@/lib/video-source';
 
 interface EpisodeSelectorProps {
   /** 总集数 */
@@ -40,7 +38,7 @@ interface EpisodeSelectorProps {
   sourceSearchLoading?: boolean;
   sourceSearchError?: string | null;
   /** 预计算的测速结果，避免重复测速 */
-  precomputedVideoInfo?: Map<string, VideoInfo>;
+  precomputedVideoInfo?: Map<string, VideoSourceTestResult>;
 }
 
 /**
@@ -64,16 +62,18 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   const pageCount = Math.ceil(totalEpisodes / episodesPerPage);
 
   // 存储每个源的视频信息
-  const [videoInfoMap, setVideoInfoMap] = useState<Map<string, VideoInfo>>(
-    new Map()
-  );
+  const [videoInfoMap, setVideoInfoMap] = useState<
+    Map<string, VideoSourceTestResult>
+  >(new Map());
   const [attemptedSources, setAttemptedSources] = useState<Set<string>>(
     new Set()
   );
 
   // 使用 ref 来避免闭包问题
   const attemptedSourcesRef = useRef<Set<string>>(new Set());
-  const videoInfoMapRef = useRef<Map<string, VideoInfo>>(new Map());
+  const videoInfoMapRef = useRef<Map<string, VideoSourceTestResult>>(new Map());
+  const probeControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const previousValueRef = useRef(value);
 
   // 同步状态到 ref
   useEffect(() => {
@@ -83,6 +83,17 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   useEffect(() => {
     videoInfoMapRef.current = videoInfoMap;
   }, [videoInfoMap]);
+
+  useEffect(() => {
+    if (previousValueRef.current === value) return;
+
+    previousValueRef.current = value;
+    probeControllersRef.current.forEach((controller) => controller.abort());
+    probeControllersRef.current.clear();
+    attemptedSourcesRef.current.clear();
+    setAttemptedSources(new Set());
+    setVideoInfoMap(new Map());
+  }, [value]);
 
   // 主要的 tab 状态：'episodes' 或 'sources'
   // 当只有一集时默认展示 "换源"，并隐藏 "选集" 标签
@@ -98,39 +109,59 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   const [descending, setDescending] = useState<boolean>(false);
 
   // 获取视频信息的函数
-  const getVideoInfo = useCallback(async (source: SearchResult) => {
-    const sourceKey = `${source.source}-${source.id}`;
+  const getVideoInfo = useCallback(
+    async (source: SearchResult) => {
+      const sourceKey = `${source.source}-${source.id}`;
+      if (attemptedSourcesRef.current.has(sourceKey)) return;
+      if (!source.episodes || source.episodes.length === 0) return;
 
-    // 使用 ref 获取最新的状态，避免闭包问题
-    if (attemptedSourcesRef.current.has(sourceKey)) {
-      return;
-    }
-
-    // 获取第一集的URL
-    if (!source.episodes || source.episodes.length === 0) {
-      return;
-    }
-    const episodeUrl =
-      source.episodes.length > 1 ? source.episodes[1] : source.episodes[0];
-
-    // 标记为已尝试
-    setAttemptedSources((prev) => new Set(prev).add(sourceKey));
-
-    try {
-      const info = await getVideoResolutionFromM3u8(episodeUrl);
-      setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
-    } catch (error) {
-      // 失败时保存错误状态
-      setVideoInfoMap((prev) =>
-        new Map(prev).set(sourceKey, {
-          quality: '错误',
-          loadSpeed: '未知',
-          pingTime: 0,
-          hasError: true,
-        })
+      const episodeIndex = Math.min(
+        Math.max(value - 1, 0),
+        source.episodes.length - 1
       );
-    }
-  }, []);
+      const controller = new AbortController();
+      probeControllersRef.current.set(sourceKey, controller);
+      attemptedSourcesRef.current.add(sourceKey);
+      setAttemptedSources((prev) => new Set(prev).add(sourceKey));
+
+      try {
+        const info = await getVideoResolutionFromM3u8(
+          source.episodes[episodeIndex],
+          { timeoutMs: 8000, signal: controller.signal }
+        );
+        setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          throw error;
+        }
+      } finally {
+        if (probeControllersRef.current.get(sourceKey) === controller) {
+          probeControllersRef.current.delete(sourceKey);
+        }
+      }
+    },
+    [value]
+  );
+
+  const retrySource = useCallback(
+    (source: SearchResult) => {
+      const sourceKey = `${source.source}-${source.id}`;
+      probeControllersRef.current.get(sourceKey)?.abort();
+      attemptedSourcesRef.current.delete(sourceKey);
+      setAttemptedSources((prev) => {
+        const next = new Set(prev);
+        next.delete(sourceKey);
+        return next;
+      });
+      setVideoInfoMap((prev) => {
+        const next = new Map(prev);
+        next.delete(sourceKey);
+        return next;
+      });
+      void getVideoInfo(source);
+    },
+    [getVideoInfo]
+  );
 
   // 当有预计算结果时，先合并到videoInfoMap中
   useEffect(() => {
@@ -155,15 +186,30 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
   // 当换源Tab激活且没有测速过时，开始测速
   useEffect(() => {
-    if (activeTab === 'sources') {
-      availableSources.forEach((source) => {
-        const sourceKey = `${source.source}-${source.id}`;
-        if (!attemptedSourcesRef.current.has(sourceKey)) {
-          getVideoInfo(source);
-        }
-      });
-    }
+    if (activeTab !== 'sources') return;
+
+    const queue = availableSources.filter(
+      (source) =>
+        !attemptedSourcesRef.current.has(`${source.source}-${source.id}`)
+    );
+    let nextIndex = 0;
+    const workerCount = Math.min(4, queue.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextIndex < queue.length) {
+        const source = queue[nextIndex++];
+        await getVideoInfo(source);
+      }
+    });
+    void Promise.allSettled(workers);
   }, [activeTab, availableSources, getVideoInfo]);
+
+  useEffect(
+    () => () => {
+      probeControllersRef.current.forEach((controller) => controller.abort());
+      probeControllersRef.current.clear();
+    },
+    []
+  );
 
   // 分类标签容器和按钮的引用
   const categoryContainerRef = useRef<HTMLDivElement>(null);
@@ -394,19 +440,15 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
             !sourceSearchError &&
             availableSources.length > 0 && (
               <div className='flex-1 overflow-y-auto space-y-2 pb-20'>
-                {availableSources
-                  .sort((a, b) => {
-                    const aIsCurrent =
-                      a.source?.toString() === currentSource?.toString() &&
-                      a.id?.toString() === currentId?.toString();
-                    const bIsCurrent =
-                      b.source?.toString() === currentSource?.toString() &&
-                      b.id?.toString() === currentId?.toString();
-                    if (aIsCurrent && !bIsCurrent) return -1;
-                    if (!aIsCurrent && bIsCurrent) return 1;
-                    return 0;
-                  })
+                {sortSourcesByPlaybackResult(
+                  availableSources,
+                  videoInfoMap,
+                  `${currentSource}-${currentId}`
+                )
                   .map((source, index) => {
+                    const sourceKey = `${source.source}-${source.id}`;
+                    const videoInfo = videoInfoMap.get(sourceKey);
+                    const isFailed = videoInfo?.hasError === true;
                     const isCurrentSource =
                       source.source?.toString() === currentSource?.toString() &&
                       source.id?.toString() === currentId?.toString();
@@ -414,12 +456,14 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                       <div
                         key={`${source.source}-${source.id}`}
                         onClick={() =>
-                          !isCurrentSource && handleSourceClick(source)
+                          !isCurrentSource && !isFailed && handleSourceClick(source)
                         }
                         className={`flex items-start gap-3 px-2 py-3 rounded-lg transition-all select-none duration-200 relative
                           ${
                             isCurrentSource
                               ? 'bg-green-500/10 dark:bg-green-500/20 border-green-500/30 border'
+                              : isFailed
+                              ? 'bg-red-500/5 dark:bg-red-500/10 opacity-80'
                               : 'hover:bg-gray-200/50 dark:hover:bg-white/10 hover:scale-[1.02] cursor-pointer'
                           }`.trim()}
                       >
@@ -443,8 +487,13 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                           {/* 标题和分辨率 - 顶部 */}
                           <div className='flex items-start justify-between gap-3 h-6'>
                             <div className='flex-1 min-w-0 relative group/title'>
-                              <h3 className='font-medium text-base truncate text-gray-900 dark:text-gray-100 leading-none'>
-                                {source.title}
+                              <h3 className='font-medium text-base text-gray-900 dark:text-gray-100 leading-none flex items-center gap-1.5 min-w-0'>
+                                <span className='truncate'>{source.title}</span>
+                                {isTrailerTitle(source.title) && (
+                                  <span className='flex-shrink-0 text-[10px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400'>
+                                    预告
+                                  </span>
+                                )}
                               </h3>
                               {/* 标题级别的 tooltip - 第一个元素不显示 */}
                               {index !== 0 && (
@@ -455,8 +504,6 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                               )}
                             </div>
                             {(() => {
-                              const sourceKey = `${source.source}-${source.id}`;
-                              const videoInfo = videoInfoMap.get(sourceKey);
                               if (videoInfo && videoInfo.quality !== '未知') {
                                 if (videoInfo.hasError) {
                                   return (
@@ -507,8 +554,6 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                           {/* 网络信息 - 底部 */}
                           <div className='flex items-end h-6'>
                             {(() => {
-                              const sourceKey = `${source.source}-${source.id}`;
-                              const videoInfo = videoInfoMap.get(sourceKey);
                               if (videoInfo) {
                                 if (!videoInfo.hasError) {
                                   return (
@@ -523,8 +568,26 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                                   );
                                 } else {
                                   return (
-                                    <div className='text-red-500/90 dark:text-red-400 font-medium text-xs'>
-                                      无测速数据
+                                    <div className='flex items-center gap-1 min-w-0 w-full'>
+                                      <span
+                                        className='text-red-500/90 dark:text-red-400 font-medium text-xs truncate'
+                                        title={videoInfo.message}
+                                      >
+                                        {videoInfo.message}
+                                      </span>
+                                      <button
+                                        type='button'
+                                        title='重新检测此线路'
+                                        aria-label='重新检测此线路'
+                                        className='ml-auto flex-shrink-0 p-1 text-gray-500 hover:text-green-500 transition-colors'
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          retrySource(source);
+                                        }}
+                                      >
+                                        <RefreshCw className='w-3.5 h-3.5' />
+                                      </button>
                                     </div>
                                   );
                                 }

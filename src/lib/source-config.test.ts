@@ -1,9 +1,38 @@
 import { AdminConfig } from './admin.types';
 import { mergeFileSources } from './source-config';
+import fileConfig from '../../config.json';
 
 type SourceConfig = AdminConfig['SourceConfig'];
 
 describe('mergeFileSources', () => {
+  it('loads the verified source order and HTTPS endpoints', () => {
+    const entries = Object.entries(fileConfig.api_site);
+
+    expect(entries.map(([key]) => key)).toEqual([
+      'gszy',
+      'sb',
+      'hn',
+      'maoyan',
+      'mdzy',
+      'zy360',
+      'ruyi',
+      'uk',
+      'wujin',
+      'zuid',
+      'lzi',
+      'jisu',
+      'bfzy',
+      'huyazy',
+      'ikun',
+    ]);
+    expect(fileConfig.api_site.gszy.api).toBe(
+      'https://api.guangsuapi.com/api.php/provide/vod'
+    );
+    expect(fileConfig.api_site.ruyi.api).toBe(
+      'https://cj.rycjapi.com/api.php/provide/vod'
+    );
+  });
+
   it('replaces stale file sources and preserves custom sources', () => {
     const current: SourceConfig = [
       {
