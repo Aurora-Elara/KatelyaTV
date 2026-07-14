@@ -2,8 +2,8 @@
   <img src="public/logo.png" alt="KatelyaTV Logo" width="128" />
 
   <h1>KatelyaTV</h1>
-  <p><strong>跨平台 · 聚合搜索 · 即开即用 · 自托管影视聚合播放器</strong></p>
-  <p>基于 <code>Next.js 14</code> · <code>TypeScript</code> · <code>Tailwind CSS</code> · 多源聚合 / 播放记录 / 收藏同步 / 跳过片头片尾 / PWA</p>
+  <p><strong>跨平台 · 聚合搜索 · 即开即用 · 自托管影视与阅读应用</strong></p>
+  <p>基于 <code>Next.js 14</code> · <code>TypeScript</code> · <code>Tailwind CSS</code> · 影视聚合 / 公版阅读 / 收藏与进度同步 / PWA</p>
   
   <p>
     <a href="#-快速开始">🚀 快速开始</a> ·
@@ -40,6 +40,14 @@
 - **👥 多用户支持**：独立的用户系统，每个用户独享个人数据
 - **🔄 数据同步**：支持多种存储后端（LocalStorage、Redis、D1、Upstash）
 - **🔒 内容过滤**：智能成人内容过滤系统，默认开启安全保护
+
+### 📚 书城与阅读
+
+- **公版全文**：通过中文维基文库读取公版或开放许可作品，并显示来源与许可信息
+- **现代书目**：聚合 Google Books、Open Library 的书目、预览和借阅信息
+- **开放目录**：管理员可添加公开 HTTPS OPDS 1/2 目录
+- **授权网页源**：仅允许接入公版、开放许可或具有书面授权的静态网页正文
+- **站内阅读**：支持 HTML、TXT、EPUB，以及目录、主题、书签和跨设备进度
 
 ### 🚀 部署特性
 
@@ -120,6 +128,11 @@ REDIS_URL=redis://katelyatv-redis:6379
 
 # 功能开关
 NEXT_PUBLIC_ENABLE_REGISTER=true
+NEXT_PUBLIC_ENABLE_BOOKS=true
+
+# 公共书目服务（Google Key 建议配置，联系邮箱必填）
+GOOGLE_BOOKS_API_KEY=your_google_books_key
+BOOK_SOURCE_CONTACT=you@example.com
 ```
 
 ```bash
@@ -195,6 +208,11 @@ AUTH_PASSWORD=your_password
 
 # 功能开关
 NEXT_PUBLIC_ENABLE_REGISTER=true
+NEXT_PUBLIC_ENABLE_BOOKS=true
+
+# 书目服务
+GOOGLE_BOOKS_API_KEY=your_google_books_key
+BOOK_SOURCE_CONTACT=you@example.com
 ```
 
 5. **重新部署** → Vercel Dashboard → Redeploy
@@ -298,17 +316,26 @@ curl -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
 
 ### 环境变量说明
 
-| 变量名                        | 必填   | 说明         | 示例值                   |
-| ----------------------------- | ------ | ------------ | ------------------------ |
-| `USERNAME`                    | 是\*   | 管理员用户名 | `admin`                  |
-| `AUTH_PASSWORD`               | 是     | 访问密码     | `your_password`          |
-| `NEXT_PUBLIC_STORAGE_TYPE`    | 否     | 存储类型     | `redis/d1/upstash`       |
-| `NEXT_PUBLIC_ENABLE_REGISTER` | 否     | 用户注册     | `true/false`             |
-| `REDIS_URL`                   | 否\*\* | Redis 连接   | `redis://localhost:6379` |
-| `UPSTASH_REDIS_REST_URL`      | 否\*\* | Upstash 地址 | `https://xxx.upstash.io` |
-| `UPSTASH_REDIS_REST_TOKEN`    | 否\*\* | Upstash 令牌 | `AX_xxx`                 |
+| 变量名                        | 必填     | 说明                 | 示例值                   |
+| ----------------------------- | -------- | -------------------- | ------------------------ |
+| `USERNAME`                    | 是\*     | 管理员用户名         | `admin`                  |
+| `AUTH_PASSWORD`               | 是       | 访问密码             | `your_password`          |
+| `NEXT_PUBLIC_STORAGE_TYPE`    | 否       | 存储类型             | `redis/d1/upstash`       |
+| `NEXT_PUBLIC_ENABLE_REGISTER` | 否       | 用户注册             | `true/false`             |
+| `REDIS_URL`                   | 否\*\*   | Redis 连接           | `redis://localhost:6379` |
+| `UPSTASH_REDIS_REST_URL`      | 否\*\*   | Upstash 地址         | `https://xxx.upstash.io` |
+| `UPSTASH_REDIS_REST_TOKEN`    | 否\*\*   | Upstash 令牌         | `AX_xxx`                 |
+| `NEXT_PUBLIC_ENABLE_BOOKS`    | 否       | 启用书城             | `true/false`             |
+| `GOOGLE_BOOKS_API_KEY`        | 否       | Google Books API Key | `AIza...`                |
+| `BOOK_SOURCE_CONTACT`         | 是\*\*\* | 公共书目服务联系邮箱 | `you@example.com`        |
 
-> \*多用户部署必填 \*\*对应存储类型必填
+> \*多用户部署必填 \*\*对应存储类型必填 \*\*\*启用书城时必填
+
+### 书籍来源配置
+
+书城内置中文维基文库、Google Books 和 Open Library。现代受版权保护作品只展示书目、合法预览、借阅或正版平台跳转，不抓取付费或受限正文。
+
+站长可以在 `/admin` 的“书籍来源配置”中添加公开 OPDS 或授权 HTML 来源。HTML 全文来源必须填写权利依据、许可页面、权利人、审核日期和允许用途；缺少全文许可时系统会自动降级为仅索引书目。系统不会绕过登录、付费墙、验证码、地区限制或反爬措施。
 
 ### 视频源配置
 

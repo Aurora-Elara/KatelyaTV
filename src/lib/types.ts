@@ -1,4 +1,5 @@
 import { AdminConfig } from './admin.types';
+import type { BookBookmark, BookFavorite, BookProgress } from './books/types';
 
 // 播放记录数据结构
 export interface PlayRecord {
@@ -89,6 +90,25 @@ export interface IStorage {
   setFavorite(userName: string, key: string, favorite: Favorite): Promise<void>;
   getAllFavorites(userName: string): Promise<{ [key: string]: Favorite }>;
   deleteFavorite(userName: string, key: string): Promise<void>;
+
+  // 书城收藏、进度和书签
+  getBookFavorites?(userName: string): Promise<Record<string, BookFavorite>>;
+  setBookFavorite?(
+    userName: string,
+    key: string,
+    favorite: BookFavorite
+  ): Promise<void>;
+  deleteBookFavorite?(userName: string, key: string): Promise<void>;
+  getBookProgress?(userName: string, key: string): Promise<BookProgress | null>;
+  getAllBookProgress?(userName: string): Promise<Record<string, BookProgress>>;
+  setBookProgress?(
+    userName: string,
+    key: string,
+    progress: BookProgress
+  ): Promise<void>;
+  getBookBookmarks?(userName: string): Promise<Record<string, BookBookmark>>;
+  setBookBookmark?(userName: string, bookmark: BookBookmark): Promise<void>;
+  deleteBookBookmark?(userName: string, id: string): Promise<void>;
 
   // 用户相关
   registerUser(userName: string, password: string): Promise<void>;

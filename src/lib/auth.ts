@@ -61,7 +61,26 @@ export async function verifyAuthRequest(
 ): Promise<{ username: string; role?: 'owner' | 'admin' | 'user' } | null> {
   const authInfo = getAuthInfoFromCookie(request);
   const secret = process.env.AUTH_PASSWORD || '';
-  if (!authInfo?.username || !authInfo.signature || !secret) return null;
+  if (!authInfo || !secret) return null;
+
+  // Older localStorage sessions contain only the configured password. New
+  // sessions also carry a username signature, but remain backward compatible.
+  if (
+    (process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage') ===
+      'localstorage' &&
+    authInfo.password === secret
+  ) {
+    const username = authInfo.username || process.env.USERNAME || 'local';
+    if (
+      authInfo.signature &&
+      !(await verifySignature(username, authInfo.signature, secret))
+    ) {
+      return null;
+    }
+    return { username, role: 'owner' };
+  }
+
+  if (!authInfo.username || !authInfo.signature) return null;
   const valid = await verifySignature(
     authInfo.username,
     authInfo.signature,

@@ -1,3 +1,5 @@
+import type { BookSourceConfig } from './books/types';
+
 export interface AdminConfig {
   SiteConfig: {
     SiteName: string;
@@ -25,6 +27,7 @@ export interface AdminConfig {
     is_adult?: boolean; // 新增：是否为成人内容资源站
     tier?: 'primary' | 'discovery';
   }[];
+  BookSourceConfig?: BookSourceConfig[];
 }
 
 export interface AdminConfigResult {

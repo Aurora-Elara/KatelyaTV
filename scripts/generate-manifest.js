@@ -17,7 +17,7 @@ const siteName = process.env.SITE_NAME || 'KatelyaTV';
 const manifestTemplate = {
   name: siteName,
   short_name: siteName,
-  description: '影视聚合',
+  description: '影视与阅读',
   start_url: '/',
   scope: '/',
   display: 'standalone',

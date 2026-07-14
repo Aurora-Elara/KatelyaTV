@@ -1,6 +1,7 @@
 /* eslint-disable no-console, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
 import { AdminConfig } from './admin.types';
+import type { BookBookmark, BookFavorite, BookProgress } from './books/types';
 import { LocalStorage } from './localstorage.db';
 import {
   Favorite,
@@ -128,6 +129,51 @@ export class DbManager {
   ): Promise<boolean> {
     const favorite = await this.getFavorite(userName, source, id);
     return favorite !== null;
+  }
+
+  // ---------- 书城 ----------
+  async getBookFavorites(userName: string) {
+    return (await this.storage.getBookFavorites?.(userName)) || {};
+  }
+
+  async saveBookFavorite(
+    userName: string,
+    key: string,
+    favorite: BookFavorite
+  ) {
+    return this.storage.setBookFavorite?.(userName, key, favorite);
+  }
+
+  async deleteBookFavorite(userName: string, key: string) {
+    return this.storage.deleteBookFavorite?.(userName, key);
+  }
+
+  async getBookProgress(userName: string, key: string) {
+    return (await this.storage.getBookProgress?.(userName, key)) || null;
+  }
+
+  async getAllBookProgress(userName: string) {
+    return (await this.storage.getAllBookProgress?.(userName)) || {};
+  }
+
+  async saveBookProgress(
+    userName: string,
+    key: string,
+    progress: BookProgress
+  ) {
+    return this.storage.setBookProgress?.(userName, key, progress);
+  }
+
+  async getBookBookmarks(userName: string) {
+    return (await this.storage.getBookBookmarks?.(userName)) || {};
+  }
+
+  async saveBookBookmark(userName: string, bookmark: BookBookmark) {
+    return this.storage.setBookBookmark?.(userName, bookmark);
+  }
+
+  async deleteBookBookmark(userName: string, id: string) {
+    return this.storage.deleteBookBookmark?.(userName, id);
   }
 
   // ---------- 用户相关 ----------

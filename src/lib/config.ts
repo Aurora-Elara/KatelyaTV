@@ -161,6 +161,7 @@ async function initConfig() {
             Users: allUsers as any,
           },
           SourceConfig: mergeFileSources([], apiSiteEntries),
+          BookSourceConfig: [],
         };
       }
 
@@ -193,6 +194,7 @@ async function initConfig() {
         Users: [],
       },
       SourceConfig: mergeFileSources([], Object.entries(fileConfig.api_site)),
+      BookSourceConfig: [],
     } as AdminConfig;
   }
 }
@@ -215,6 +217,7 @@ export async function getConfig(): Promise<AdminConfig> {
     }
 
     if (adminConfig) {
+      adminConfig.BookSourceConfig ||= [];
       // 合并一些环境变量配置
       adminConfig.SiteConfig.SiteName = process.env.SITE_NAME || 'KatelyaTV';
       adminConfig.SiteConfig.Announcement =
@@ -334,6 +337,7 @@ export async function resetConfig() {
       Users: allUsers as any,
     },
     SourceConfig: mergeFileSources([], apiSiteEntries),
+    BookSourceConfig: [],
   } as AdminConfig;
 
   if (storage && typeof (storage as any).setAdminConfig === 'function') {
@@ -346,6 +350,7 @@ export async function resetConfig() {
   cachedConfig.SiteConfig = adminConfig.SiteConfig;
   cachedConfig.UserConfig = adminConfig.UserConfig;
   cachedConfig.SourceConfig = adminConfig.SourceConfig;
+  cachedConfig.BookSourceConfig = adminConfig.BookSourceConfig;
 }
 
 export async function getCacheTime(): Promise<number> {

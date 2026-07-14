@@ -59,7 +59,10 @@ async function generateAuthCookie(
   if (username && process.env.AUTH_PASSWORD) {
     authData.username = username;
     // 使用密码作为密钥对用户名进行签名
-    const signature = await generateSignature(username, process.env.AUTH_PASSWORD);
+    const signature = await generateSignature(
+      username,
+      process.env.AUTH_PASSWORD
+    );
     authData.signature = signature;
     authData.timestamp = Date.now(); // 添加时间戳防重放攻击
   }
@@ -104,11 +107,11 @@ export async function POST(req: NextRequest) {
       // 验证成功，设置认证cookie
       const response = NextResponse.json({ ok: true });
       const cookieValue = await generateAuthCookie(
-        undefined,
+        process.env.USERNAME || 'local',
         password,
-        'user',
+        'owner',
         true
-      ); // localstorage 模式包含 password
+      ); // localstorage 模式保留 password，并加入签名供服务端 API 验证
       const expires = new Date();
       expires.setDate(expires.getDate() + 7); // 7天过期
 

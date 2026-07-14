@@ -77,9 +77,25 @@ const withPWA = require('next-pwa')({
   skipWaiting: true,
   runtimeCaching: [
     {
-      urlPattern: /\/api\/(?:search\/progressive|source-health)(?:\?.*)?$/,
+      urlPattern:
+        /\/api\/(?:search\/progressive|source-health|books(?:\/.*)?|admin\/book-sources)(?:\?.*)?$/,
       handler: 'NetworkOnly',
       method: 'GET',
+    },
+    {
+      urlPattern: /\/api\/(?:books(?:\/.*)?|admin\/book-sources)(?:\?.*)?$/,
+      handler: 'NetworkOnly',
+      method: 'POST',
+    },
+    {
+      urlPattern: /\/api\/books(?:\/.*)?(?:\?.*)?$/,
+      handler: 'NetworkOnly',
+      method: 'PUT',
+    },
+    {
+      urlPattern: /\/api\/(?:books(?:\/.*)?|admin\/book-sources)(?:\?.*)?$/,
+      handler: 'NetworkOnly',
+      method: 'DELETE',
     },
     ...defaultRuntimeCaching,
   ],

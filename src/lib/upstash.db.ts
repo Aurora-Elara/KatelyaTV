@@ -3,6 +3,7 @@
 import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
+import type { BookBookmark, BookFavorite, BookProgress } from './books/types';
 import { hashPassword, verifyPassword } from './password';
 import { calculateSourceHealthScore } from './source-health';
 import {
@@ -159,6 +160,101 @@ export class UpstashRedisStorage implements IStorage {
     await withRetry(() => this.client.del(this.favKey(userName, key)));
   }
 
+  // ---------- 书城 ----------
+  private bookFavoriteKey(user: string, key: string) {
+    return `u:${user}:book:fav:${key}`;
+  }
+
+  private bookProgressKey(user: string, key: string) {
+    return `u:${user}:book:progress:${key}`;
+  }
+
+  private bookBookmarkKey(user: string, id: string) {
+    return `u:${user}:book:bookmarks:${id}`;
+  }
+
+  private async getRecordByPattern<T>(
+    pattern: string,
+    prefix: string
+  ): Promise<Record<string, T>> {
+    const keys = await withRetry(() => this.client.keys(pattern));
+    if (!keys.length) return {};
+    const result: Record<string, T> = {};
+    for (const fullKey of keys) {
+      const value = await withRetry(() => this.client.get(fullKey));
+      if (value) result[fullKey.replace(prefix, '')] = value as T;
+    }
+    return result;
+  }
+
+  async getBookFavorites(
+    userName: string
+  ): Promise<Record<string, BookFavorite>> {
+    const prefix = `u:${userName}:book:fav:`;
+    return this.getRecordByPattern(`${prefix}*`, prefix);
+  }
+
+  async setBookFavorite(
+    userName: string,
+    key: string,
+    favorite: BookFavorite
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.set(this.bookFavoriteKey(userName, key), favorite)
+    );
+  }
+
+  async deleteBookFavorite(userName: string, key: string): Promise<void> {
+    await withRetry(() => this.client.del(this.bookFavoriteKey(userName, key)));
+  }
+
+  async getBookProgress(
+    userName: string,
+    key: string
+  ): Promise<BookProgress | null> {
+    const value = await withRetry(() =>
+      this.client.get(this.bookProgressKey(userName, key))
+    );
+    return value ? (value as BookProgress) : null;
+  }
+
+  async getAllBookProgress(
+    userName: string
+  ): Promise<Record<string, BookProgress>> {
+    const prefix = `u:${userName}:book:progress:`;
+    return this.getRecordByPattern(`${prefix}*`, prefix);
+  }
+
+  async setBookProgress(
+    userName: string,
+    key: string,
+    progress: BookProgress
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.set(this.bookProgressKey(userName, key), progress)
+    );
+  }
+
+  async getBookBookmarks(
+    userName: string
+  ): Promise<Record<string, BookBookmark>> {
+    const prefix = `u:${userName}:book:bookmarks:`;
+    return this.getRecordByPattern(`${prefix}*`, prefix);
+  }
+
+  async setBookBookmark(
+    userName: string,
+    bookmark: BookBookmark
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.set(this.bookBookmarkKey(userName, bookmark.id), bookmark)
+    );
+  }
+
+  async deleteBookBookmark(userName: string, id: string): Promise<void> {
+    await withRetry(() => this.client.del(this.bookBookmarkKey(userName, id)));
+  }
+
   // ---------- 用户注册 / 登录 ----------
   private userPwdKey(user: string) {
     return `u:${user}:pwd`;
@@ -228,6 +324,13 @@ export class UpstashRedisStorage implements IStorage {
     );
     if (favoriteKeys.length > 0) {
       await withRetry(() => this.client.del(...favoriteKeys));
+    }
+
+    const bookKeys = await withRetry(() =>
+      this.client.keys(`u:${userName}:book:*`)
+    );
+    if (bookKeys.length > 0) {
+      await withRetry(() => this.client.del(...bookKeys));
     }
   }
 

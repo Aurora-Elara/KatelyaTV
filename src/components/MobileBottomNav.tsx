@@ -1,6 +1,6 @@
 'use client';
 
-import { Clover, Film, Home, Search, Tv } from 'lucide-react';
+import { BookOpen, Film, Home, Search, Tv } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -10,6 +10,8 @@ interface MobileBottomNavProps {
    */
   activePath?: string;
 }
+
+const booksEnabled = process.env.NEXT_PUBLIC_ENABLE_BOOKS !== 'false';
 
 const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
   const pathname = usePathname();
@@ -30,11 +32,21 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
       label: '剧集',
       href: '/douban?type=tv',
     },
-    {
-      icon: Clover,
-      label: '综艺',
-      href: '/douban?type=show',
-    },
+    ...(booksEnabled
+      ? [
+          {
+            icon: BookOpen,
+            label: '书城',
+            href: '/books',
+          },
+        ]
+      : [
+          {
+            icon: Tv,
+            label: '综艺',
+            href: '/douban?type=show',
+          },
+        ]),
   ];
 
   const isActive = (href: string) => {
